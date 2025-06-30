@@ -1,4 +1,4 @@
-# 📊 PREDICCIÓN DE LA INFLACIÓN EN MÉXICO
+# 📊 PREDICCIÓN DE LA INFLACIÓN y el Índice Nacional de Precios al Consumidor y sus Componentes EN MÉXICO
 ## Un estudio comparativo entre modelos clásicos, árboles de decisión y redes neuronales
 
 Este proyecto forma parte de la tesis de licenciatura en Matemáticas Aplicadas. Su objetivo es predecir la inflación en México mediante un enfoque comparativo que evalúa modelos clásicos, algoritmos de árboles de decisión y redes neuronales profundas.
