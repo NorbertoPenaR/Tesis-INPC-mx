@@ -16,20 +16,22 @@ Evaluar el desempeño de distintos modelos de predicción de series temporales p
 - Long Short-Term Memory (LSTM)
 - DeepAR
 - Transformer
+- NHITS
 - D³VAE
 
 ## 🧾 Estructura del Proyecto
 
-- `obj.py`: Definición de objetos y estructuras comunes
-- `fit.py`: Entrenamiento de modelos
-- `predict.py`: Predicciones sobre el conjunto de prueba
-- `utils.py`: Funciones auxiliares
-- `process_data.py`: Limpieza, transformación y escalado de datos
+- `obj.py`: Definición de las funciones objetivo de cada modelo para obtener los mejores parametros dado el conjunto de prueba.
+- `fit.py`: Entrenamiento de modelos.
+- `predict.py`: Predicciones a futuro, y resultados sobre datos no vistos para evaluar el rendimiento de los modelos.
+- `utils.py`: Funciones auxiliares. 
+- `process_data.py`: Limpieza, transformación y extracción de datos
 - `main.py`: Orquestador principal del flujo completo
 
 ## 📁 Datos
 
 Los datos se obtuvieron del INEGI y consisten en series quincenales del Índice Nacional de Precios al Consumidor (INPC) y sus componentes.
+https://www.inegi.org.mx/temas/inpc/
 
 ## ▶️ Ejecución
 
