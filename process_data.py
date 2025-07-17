@@ -8,7 +8,7 @@ def inpc_data_weekly(total_info=None):
     inpc['ds'] = inpc['ds'].apply(utilities.convertir_fecha_quincenal)
     inpc_inflacion = utilities.calcular_inflacion_por_columnas(inpc).dropna()
     inpc_inflacion = inpc_inflacion.set_index('ds').sort_index()
-    inpc_weekly = inpc_inflacion.resample('W-mon').sum().reset_index()#.interpolate(method='linear')
+    inpc_weekly = inpc_inflacion.resample('W-mon').sum().reset_index()
     inpc_weekly = inpc_weekly.replace(0, np.nan)
     inpc_weekly = inpc_weekly.interpolate(method='linear')
     columnas = ['Inflacion', 'Subyacente', 'Mercancias',
