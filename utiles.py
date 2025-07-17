@@ -8,9 +8,133 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 
 class utilities:
+
+    @staticmethod
+    def exo_variables_train(train_data=None,
+                            lag_start=1,
+                            lag_end=48,
+                            signals=15
+                            ):
+        
+        total = train_data.copy()
+        # El día se establece como 1 para poder obtener los lags correctamente
+        # (Las variables rezagadas de la target variable.) 
+        total['ds'] = total['ds'].apply(lambda x: x.replace(day=1))
+        total = utilities.laggin_features(lag_start, lag_end, total, 'ds')
+        total = utilities.features_from_date(total, 'ds')
+
+        # Senoidales
+        senoidales, _, _ = utilities.generar_senoidales_exogenas(total['y'], top_k=signals, extra_steps=12)
+        # Ordenar por fecha por seguridad
+        total = total.sort_values('ds')
+
+        # Aplicar promedio progresivo mes a mes
+        total['Promedio_Historico'] = (
+            total
+            .groupby('month')['y']
+            .expanding()
+            .mean()
+            .reset_index(level=0, drop=True)
+            .astype(int)  # Puedes quitar el int si quieres el promedio exacto
+        )
+
+        # Aplicar promedio progresivo mes a mes
+        total['Std_Historico'] = (
+            total
+            .groupby('month')['y']
+            .expanding()
+            .std()
+            .reset_index(level=0, drop=True)
+            #.astype(int)  # Puedes quitar el int si quieres el promedio exacto
+        )
+
+        for c in senoidales.columns:
+            total[c] = (senoidales[c]).values[:len(total)]
+
+        #total['relacion_y_prom_hist'] = total['y'] / (total['Promedio_Historico'] + 1e-6)
+        total['relacion_y_prom_hist_12'] = (total['y_last_12'] / (total['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_y_prom_hist_24'] = (total['y_last_24'] / (total['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_y_prom_hist_36'] = (total['y_last_36'] / (total['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_y_prom_hist_48'] = (total['y_last_48'] / (total['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+
+        total['relacion_Std_Historico_12'] = (total['y_last_12'] / (total['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_Std_Historico_24'] = (total['y_last_24'] / (total['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_Std_Historico_36'] = (total['y_last_36'] / (total['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        total['relacion_Std_Historico_48'] = (total['y_last_48'] / (total['Std_Historico'] + 1e-6)).replace(0, np.nan)
+
+        total['upper'] = total['Promedio_Historico']+total['Std_Historico']
+        total['lower'] = total['Promedio_Historico']-total['Std_Historico']
+
+        total['relacion_signal_prom_hist'] = total['signal'] / (total['Promedio_Historico'] + 1e-6)
+
+        total['signal_invertida'] = 1 - total['signal']
+        total['signal_suavizada'] = (
+            total['signal']
+            .rolling(2, center=True)
+            .mean()
+            .interpolate(method='linear')
+        ) # La mejor
+        return total
+
+    @staticmethod
+    def exo_variables_predict(train_data=None,
+                            cutoff_date=None,
+                            horizon=12,
+                            lag_start=1, 
+                            lag_end=48,
+                            signals=15):
+        
+        cutoff_date = pd.to_datetime(cutoff_date)
+        dff = pd.DataFrame(pd.date_range(cutoff_date,
+                                        cutoff_date + relativedelta(months=horizon),
+                                        freq='ME'),
+                                        columns=['ds'])
+        dff['ds'] = dff['ds'].apply(lambda x: x.replace(day=1))
+        dff = utilities.features_from_date(dff, ds='ds')
+        
+        historicos = (
+            train_data
+            .groupby('month')['y']
+            .agg(Promedio_Historico='mean', Std_Historico='std')
+            .reset_index()
+        )
+
+        dff = dff.merge(historicos)
+        dff = utilities.lags_future_features(dff=dff, inference_data= train_data, n_lags_start=lag_start, n_lags_end=lag_end, ds='ds')
+        senoidales, _, _ = utilities.generar_senoidales_exogenas(train_data['y'], top_k=signals, 
+                        extra_steps=horizon, plot=False, #scale_range=(train_data['y'].min(), train_data['y'].max())
+                        )
+
+        for c in senoidales.columns:
+            dff[c] = (senoidales[c]).values[len(train_data):]
+
+        dff['relacion_y_prom_hist_12'] = (dff['y_last_12'] / (dff['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_y_prom_hist_24'] = (dff['y_last_24'] / (dff['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_y_prom_hist_36'] = (dff['y_last_36'] / (dff['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_y_prom_hist_48'] = (dff['y_last_48'] / (dff['Promedio_Historico'] + 1e-6)).replace(0, np.nan)
+
+        dff['relacion_Std_Historico_12'] = (dff['y_last_12'] / (dff['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_Std_Historico_24'] = (dff['y_last_24'] / (dff['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_Std_Historico_36'] = (dff['y_last_36'] / (dff['Std_Historico'] + 1e-6)).replace(0, np.nan)
+        dff['relacion_Std_Historico_48'] = (dff['y_last_48'] / (dff['Std_Historico'] + 1e-6)).replace(0, np.nan)
+
+        dff['upper'] = dff['Promedio_Historico']+dff['Std_Historico']
+        dff['lower'] = dff['Promedio_Historico']-dff['Std_Historico']
+
+        dff['relacion_signal_prom_hist'] = dff['signal'] / (dff['Promedio_Historico'] + 1e-6)
+
+        dff['signal_invertida'] = 1 - dff['signal']
+        dff['signal_suavizada'] = (
+            dff['signal']
+            .rolling(2, center=True)
+            .mean()
+            .interpolate(method='linear')
+        ) # La mejor
+        return dff
+
     
     @staticmethod
-    def generar_senoidales_exogenas(x, top_k=4, extra_steps=0, scale_range=(0, 1), plot=True):
+    def generar_senoidales_exogenas(x, top_k=4, extra_steps=0, scale_range=(0, 1), plot=False):
         """
         Genera senoidales exógenas a partir de la descomposición de Fourier.
         
@@ -77,7 +201,7 @@ class utilities:
         return features_df, t_total, info_frec
     
     @staticmethod
-    def reconstruir_frecuencias(x, top_k=3, extra_steps=0, plot=True):
+    def reconstruir_frecuencias(x, top_k=3, extra_steps=0, plot=False):
         """
         Descompone y reconstruye una serie usando las top_k frecuencias más fuertes.
         
