@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 import fit
 import predict
+print('Hola')
 from orquestador import orchestrator
+print('Seconda HAnd')
 import process_data
 # Si no se cuenta con datos actualizados
 print("🔗 Por favor descarga el archivo manualmente desde:")
@@ -19,7 +21,10 @@ sellin_weekly = sellin_file.set_index('ds').groupby(['sku',
 
 inpc_path = 'ca56_2018a.csv'
 inpc = process_data.limpiar_csv_inegi(inpc_path)
+print(inpc)
+
 weekly_inpc = process_data.inpc_data_weekly(datos=inpc)
+
 
 print(inpc.ds.min())
 print(inpc.ds.max())
@@ -27,13 +32,18 @@ print(inpc.ds.max())
 print(weekly_inpc.ds.min())
 print(weekly_inpc.ds.max())
 
-pronostico = orchestrator(data = weekly_inpc,
-                        fecha_d_corte= '2022-06-01', 
-                        iteraciones= 5,
-                        frequencia='W-mon',
-                        horizonte=15,
-                        modelo='rnn')
+# Metricas disponibles
+# 'MAE' 'MAPE' 'RMSE' 'MSE'
 
+orc = orchestrator(data = weekly_inpc,
+                    fecha_d_corte= '2022-06-01', 
+                    iteraciones= 5,
+                    frequencia='W-mon',
+                    horizonte=15,
+                    modelo='rnn',
+                    metrica='MAE')
+
+orc.train_n_predict()
 
 '''total = 
 cut_date = '2025-01-01'

@@ -37,7 +37,7 @@ import numpy as np
 
 from neuralforecast import NeuralForecast
 from neuralforecast.models import DeepAR, VanillaTransformer, LSTM, RNN, NHITS
-from neuralforecast.losses.pytorch import DistributionLoss, MQLoss, MAE, RMSE, MAPE
+from neuralforecast.losses.pytorch import DistributionLoss, MQLoss, MAE, RMSE, MAPE, MSE
 import numpy as np
 import tensorflow as tf
 from neuralforecast.auto import AutoNHITS
@@ -70,6 +70,7 @@ metric_map = {
     'MAE': MAE(),
     'MAPE': MAPE(),
     'RMSE': RMSE(),
+    'MSE': MSE()
 }
 
 def obj_holt_winters(config=None, data=None):
@@ -82,7 +83,7 @@ def obj_holt_winters(config=None, data=None):
     mu = x_train['y'].mean()
     sigma = x_train['y'].std()
     x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
-    scaler = MinMaxScaler(feature_range=(1, 2))
+    scaler = MinMaxScaler(feature_range=(1, 10))
     data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
     x_train['y_scaled'] = data_scaled
     #Train = x_train.copy()
