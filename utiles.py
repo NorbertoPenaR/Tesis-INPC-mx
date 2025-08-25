@@ -6,8 +6,191 @@ import os
 from dateutil.relativedelta import relativedelta
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+from sklearn.metrics import root_mean_squared_error, mean_absolute_error, mean_squared_error
 
 class utilities:
+
+    # ---------- utilidades ----------
+    def slope_match_penalty(y, yhat, delta=None, schedule="linear",
+                            asym_up=1.0, asym_down=1.6):
+        dy = np.diff(y); dp = np.diff(yhat)
+        if len(dp) == 0: return 0.0
+        if delta is None: delta = 0.5*(np.std(dy) + 1e-12)
+        H1 = len(dp)
+        if schedule == "linear":
+            w = np.linspace(0.5, 1.0, H1)  # pesa más al final
+        elif schedule == "quad":
+            t = np.linspace(0,1,H1); w = 0.5 + 0.5*(t**2)
+        else:
+            w = np.ones(H1)
+        d  = dp - dy
+        up = np.clip(d,  0, None)  # ŷ sube más que y
+        dn = np.clip(-d, 0, None)  # ŷ baja más que y (tu caso típico)
+        def huber(x, delta):
+            m = np.abs(x) <= delta
+            return np.where(m, 0.5*(x**2)/delta, np.abs(x) - 0.5*delta)
+        pen = (w*(asym_up*huber(up, delta) + asym_down*huber(dn, delta))).sum()/w.sum()
+        return float(pen)
+
+    def turn_penalty(y, yhat):  # respeta cambios de signo en la pendiente
+        dy = np.diff(y); dp = np.diff(yhat)
+        if len(dp) == 0: return 0.0
+        return float(np.mean(np.maximum(0.0, -(dy*dp)) / (np.median(np.abs(dy))+1e-12)))
+
+    def curvature_match_penalty(y, yhat, delta=None):  # opcional
+        if len(yhat) < 3 or len(y) < 3: return 0.0
+        ddp = np.diff(yhat, n=2); ddt = np.diff(y, n=2)
+        if delta is None: delta = 0.5*(np.std(ddt) + 1e-12)
+        d = ddp - ddt
+        m = np.abs(d) <= delta
+        huber = np.where(m, 0.5*(d**2)/delta, np.abs(d) - 0.5*delta)
+        return float(huber.mean())
+
+    def linearity_metrics(y):
+        H = len(y); t = np.arange(H)
+        b1, b0 = np.polyfit(t, y, 1)
+        y_lin  = b0 + b1*t
+        r2_line = 1.0 - np.mean((y - y_lin)**2)/(np.var(y)+1e-12)
+        d1 = np.diff(y); d2 = np.diff(y, n=2)
+        curv_ratio = np.mean(d2**2)/(np.mean(d1**2)+1e-12)
+        slope_std_ratio = np.std(d1)/(np.abs(np.mean(d1))+1e-12)
+        return r2_line, curv_ratio, slope_std_ratio
+
+    def linearity_penalty(y, yhat, w_turn=0.6, w_slope=0.8,
+                        lin_r2=0.85, lin_curv=0.05, lin_sstd=0.30):
+        r2, cr, ss = utilities.linearity_metrics(yhat)
+        #print(r2, cr, ss)
+        near_linear = (r2 > lin_r2) or ((cr < lin_curv) and (ss < lin_sstd))
+        print('Predicción Lineal?')
+        print(near_linear)
+        if not near_linear: return 0.0
+        return (w_turn*utilities.turn_penalty(y, yhat) +
+                w_slope*utilities.slope_match_penalty(y, yhat, delta=None, schedule="linear",
+                                            asym_up=1.0, asym_down=1.6))
+
+
+
+    # pause 
+    '''def slope_match_penalty(y, yhat, delta=None, schedule="linear",
+                            asym_up=1.0, asym_down=1.2):
+        # Δ: adaptativo (ruido típico de la pendiente real)
+        d_y  = np.diff(y);    d_p = np.diff(yhat)
+        if len(d_p) == 0: return 0.0
+        if delta is None: delta = 0.5*(np.std(d_y) + 1e-12)
+
+        H1 = len(d_p)
+        if schedule == "linear":
+            w = np.linspace(0.5, 1.0, H1)   # más peso al final
+        elif schedule == "quad":
+            t = np.linspace(0, 1, H1); w = 0.5 + 0.5*t**2
+        else:
+            w = np.ones(H1)
+
+        d = d_p - d_y
+        up = np.clip(d,  0, None)  # ŷ sube más que y
+        dn = np.clip(-d, 0, None)  # ŷ baja más que y (tu caso)
+
+        def huber(x, delta):
+            m = np.abs(x) <= delta
+            return np.where(m, 0.5*(x**2)/delta, np.abs(x) - 0.5*delta)
+
+        pen = (w*(asym_up*huber(up, delta) + asym_down*huber(dn, delta))).sum() / w.sum()
+        return float(pen)'''
+
+    '''def turn_penalty(y, yhat, tau=None, schedule="linear"):
+        # castiga si sign(Δŷ) != sign(Δy)
+        d_y  = np.diff(y);    d_p = np.diff(yhat)
+        if len(d_p) == 0: return 0.0
+        if tau is None: tau = np.median(np.abs(d_y)) + 1e-12  # escala
+
+        prod = d_y * d_p  # <0 => signos opuestos
+        mis = np.maximum(0.0, -prod) / (tau)  # hinge suave
+        H1 = len(mis)
+        w = np.linspace(0.5, 1.0, H1) if schedule == "linear" else np.ones(H1)
+        return float((w*mis).sum()/w.sum())'''
+
+    def curvature_match_penalty(y, yhat, delta=None):
+        # opcional: alinea curvaturas (captura la U del giro)
+        if len(yhat) < 3 or len(y) < 3: return 0.0
+        ddp = np.diff(yhat, n=2); ddt = np.diff(y, n=2)
+        if delta is None: delta = 0.5*(np.std(ddt) + 1e-12)
+        d = ddp - ddt
+        m = np.abs(d) <= delta
+        huber = np.where(m, 0.5*(d**2)/delta, np.abs(d) - 0.5*delta)
+        return float(huber.mean())
+
+
+    def mae_with_shape_penalties(y_true, y_pred,
+                                lam_curv=0.2,   # suaviza dientes/cohetes
+                                lam_slope=0.1,  # evita horizontes planos si la verdad tiene pendiente
+                                delta=0.05):    # Huber (en puntos p.p. aprox)
+        # MAE base
+        mae = mean_absolute_error(y_true, y_pred)
+
+        # Escala para normalizar curvatura (hace comparable con MAE)
+        scale = np.std(y_true) + 1e-12
+
+        # (1) Curvatura de la predicción (Wahba discreto): mean( (Δ²ŷ)^2 )
+        if len(y_pred) >= 3:
+            dd_pred = np.diff(y_pred, n=2)
+            pen_curv = float(np.mean(dd_pred**2)) / (scale**2)
+        else:
+            pen_curv = 0.0
+
+        # (2) “Slope match”: castiga estar plano si la verdad tiene tendencia
+        if len(y_pred) >= 2:
+            sp = np.diff(y_pred)
+            st = np.diff(y_true)
+            d  = sp - st
+            mask  = np.abs(d) <= delta
+            huber = np.where(mask, 0.5*(d**2)/delta, np.abs(d) - 0.5*delta).mean()
+            pen_slope = float(huber)
+        else:
+            pen_slope = 0.0
+
+        return mae + lam_curv*pen_curv + lam_slope*pen_slope
+
+    @staticmethod
+    def reconstruccion_diff2(diff2_series, y_t_minus_1, y_t_minus_2):
+        """
+        Reconstruye una serie original a partir de su doble diferencia,
+        usando los dos últimos valores reales de la serie original.
+        """
+        # Paso 1: Recuperar la primera diferencia original
+        diff1 = diff2_series.cumsum() + (y_t_minus_1 - y_t_minus_2)
+
+        # Paso 2: Recuperar la serie original
+        reconstructed = diff1.cumsum() + y_t_minus_1
+
+        return reconstructed
+    
+    @staticmethod
+    def reconstruccion_diff(diff_series, last_value):
+        return diff_series.cumsum() + last_value
+    
+    @staticmethod
+    def reconstruccion_log(log_series):
+        return np.expm1(log_series)
+
+    @staticmethod
+    def reconstruccion_log_diff(diff_log_series, last_y):
+        last_log = np.log1p(last_y)
+        log_series = diff_log_series.cumsum() + last_log
+        return np.expm1(log_series)
+
+    @staticmethod
+    def reconstruccion_pct(pct_series, start_value):
+        values = [start_value]
+        for pct in pct_series:
+            new_val = values[-1] * (1 + pct / 100)
+            values.append(new_val)
+        return values[1:] 
+    # Ejemplo de Uso en la Practica ~ Implementación*
+    '''subset['y_pct'] = subset['y'].pct_change() * 100  # Variación porcentual
+    start_value = subset['y'].iloc[0]
+    subset.loc[1:, 'y_hat'] = reconstruccion_pct(subset['y_pct'].iloc[1:], start_value)'''
 
     @staticmethod
     def exo_variables_train(train_data=None,
@@ -647,6 +830,35 @@ class utilities:
         data['dayofmonth'] = data[ds].dt.day
         data['weekofyear'] = data[ds].dt.isocalendar().week 
         return data.sort_values(by=ds)
+    
+    @staticmethod
+    def ultimos_dias_meses(n=6, frecuencia=1, referencia=None):
+        """
+        Devuelve una lista con los últimos días de cada mes, de los últimos `n` meses,
+        saltando cada `frecuencia` meses.
+        
+        Parámetros:
+        - n: int, número de fechas que quieres obtener.
+        - frecuencia: int, intervalo de meses (1 = cada mes, 2 = cada 2 meses, etc.).
+        - referencia: datetime o str (opcional), fecha de referencia para contar hacia atrás (por defecto hoy).
+        
+        Retorna:
+        - Lista de fechas (datetime) de los últimos días de cada mes.
+        """
+        if referencia is None:
+            referencia = datetime.today()
+        elif isinstance(referencia, str):
+            referencia = pd.to_datetime(referencia)
+
+        fechas = []
+        for i in range(n):
+            # Calcular el mes con el desfase
+            fecha_mes = referencia - relativedelta(months=i * frecuencia)
+            # Obtener el último día del mes
+            ultimo_dia = pd.Timestamp(fecha_mes).replace(day=1) + pd.offsets.MonthEnd(0)
+            fechas.append(ultimo_dia)
+
+        return sorted(fechas)
 
     def metricas_analytics_neural_obj(self, cr, cr_sept):
         cr_sept['yhat'] = cr_sept['yhat'].astype(float).astype(int)

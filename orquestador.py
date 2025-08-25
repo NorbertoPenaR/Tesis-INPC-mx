@@ -1,11 +1,27 @@
-# orquestador
+# orquestador.py
+# Copyright (c) 2024 Norberto P. R. – All rights reserved.
+# Licensed for private use only.
+
 from tqdm import tqdm
 import warnings
 import pandas as pd
 import numpy as np
-import fit
-import predict
-print('Hello')
+#import fit
+#import predict
+import matplotlib.pyplot as plt 
+import fit_bayes_opt as fit
+import predict_bayes as predict
+
+from tqdm import tqdm
+import os
+from datetime import datetime
+import time
+
+from sklearn.metrics import root_mean_squared_error, mean_absolute_error, mean_squared_error
+
+
+# Formato: YYYYMMDD-HHMM
+timestamp = datetime.now().strftime("%Y%m%d-%H%M")
 
 class orchestrator:
 
@@ -16,7 +32,12 @@ class orchestrator:
                 frequencia=None,
                 horizonte=None,
                 modelo=None,
-                metrica=None
+                metrica=None,
+                ids=None,
+                mes_val=None,
+                features=None,
+                transformacion=None,
+                signals=None
                 ):
         
         self.data = data
@@ -26,121 +47,308 @@ class orchestrator:
         self.horizonte = horizonte
         self.modelo = modelo
         self.metrica = metrica
+        self.features = features
         self.resultados_gen = []
         self.predicciones_gen = []
+        self.signals=signals
+        self.transformation = transformacion
+        self.ids = ids
+        self.mes_val = mes_val
+        self.str_date = str(self.fecha_d_corte)[: 10]
+
+        # Se crean las carpetas si no existen
+        os.makedirs("resultados", exist_ok=True)
+        os.makedirs("pronosticos", exist_ok=True)
+
+        self.timestamp = timestamp
+        self.file_resultados = f'resultados/resultados-{self.modelo}-{self.features}-{self.transformation}-{self.str_date}-{self.mes_val}-{self.timestamp}-sgls-{self.signals}.csv'
+        self.file_forecast  = f'pronosticos/forecast-{self.modelo}-{self.features}-{self.transformation}-{self.str_date}-{self.mes_val}-{self.timestamp}-sgnls-{self.signals}.csv'
+        #self.file_resultados = f'resultados/resultados-{self.modelo}-{self.str_date}-{self.mes_val}.csv'
+        #self.file_forecast = f'pronosticos/forecast-{self.modelo}-{self.str_date}-{self.mes_val}.csv'
         
     def train_n_predict(self):
-        if self.modelo=='lstm':
-            for id in self.data.unique_id.unique():
+
+        print('Modelo')
+        print(self.modelo)
+
+        if self.modelo=='avg_naive':
+            for id in tqdm(self.ids, desc=f"Entrenando {self.modelo}"):
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
 
+                start_time = time.time()
+
+                parametros= {
+                    'years':10,
+                    'months':3,
+                    'h':52,
+                    'freq':self.frequencia
+                }
+
+
+                predicciones, resultados = predict.predict_avg_naive(
+                    config=parametros,
+                    data=subset,
+                    cutoff_date=self.fecha_d_corte
+                )
+
+
+
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+
+                self.resultados_gen.append(resultados)
+                self.predicciones_gen.append(predicciones)
+
+                
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
+
+        elif self.modelo=='fft':
+            for id in tqdm(self.ids, desc=f"Entrenando {self.modelo}"):
+                print(f"Procesando ID: {id}")
+                subset = self.data[self.data['unique_id'] == id]
+
+                start_time = time.time()
+                parametros, _ = fit.fit_fft(
+                    data=subset,
+                    cutoff_date=self.fecha_d_corte,
+                    iteraciones=self.iteraciones,
+                    freak=self.frequencia,
+                    horizon=self.horizonte,
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    #feats=self.features,
+                    transf=self.transformation,
+                    signals=self.signals
+                )
+
+                _, predicciones, resultados = predict.predict_dft(
+                    config=parametros,
+                    data=subset,
+                    cutoff_date=self.fecha_d_corte
+                )
+
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['years']= parametros['years']
+                resultados['months']= parametros['months']
+
+                self.resultados_gen.append(resultados)
+                self.predicciones_gen.append(predicciones)
+            
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
+
+        elif self.modelo=='lstm':
+            for id in tqdm(self.ids, desc=f"Entrenando {self.modelo}"):
+                print(f"Procesando ID: {id}")
+                subset = self.data[self.data['unique_id'] == id]
+
+                start_time = time.time()
                 parametros, _ = fit.fit_lstm(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    feats=self.features,
+                    transf=self.transformation,
+                    signals=self.signals
                 )
-                resultados, predicciones = predict.predict_lstm(
+
+                performance, predicciones, resultados = predict.predict_lstm(
                     config=parametros,
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
-                
+
+                '''fig, ax = plt.subplots(1, 1, figsize = (18, 7))
+                recent = performance[performance['ds']>'2020-01-01']
+                plt.plot(recent['ds'], recent['y'], marker='o', label='inflacion')
+                plt.plot(recent['ds'], recent['lstm_og'], marker='o', label='lstm_og')
+                plt.title(f"Inflación mensual - Feature - fecha {self.fecha_d_corte} ~ Señales" )
+                plt.xlabel("Fecha")
+                plt.ylabel("Porcentaje")
+                plt.grid(True)
+                plt.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                plt.show()'''
+
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['years']= parametros['years']
+                resultados['months']= parametros['months']
+                resultados['input_size']= parametros['input_size']
+                resultados['neurons']= parametros['neurons']
+                resultados['layers']= parametros['layers']
+                resultados['max_steps'] = parametros['max_steps']
+                #resultados['learning_rate'] = parametros['learning_rate']
+                resultados['signals'] = parametros['signals']
+
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
-            
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
+
+            #res_gens = pd.concat(self.resultados_gen)
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
+            #print('Mae Avg')
+            #print(mean_absolute_error(res_gens['y'], res_gens['lstm_og']))
         
         elif self.modelo=='rnn':
-            for id in self.data.unique_id.unique():
+            for id in self.ids:
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
+                start_time = time.time()
+
                 parametros, _ = fit.fit_rnn(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    feats=self.features,
+                    transf=self.transformation,
+                    signals=self.signals
                 )
                 
-                resultados, predicciones = predict.predict_rnn(
+                performance, predicciones, resultados = predict.predict_rnn(
                     config=parametros,
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['years']= parametros['years']
+                resultados['months']= parametros['months']
+                resultados['input_size']= parametros['input_size']
+                resultados['neurons']= parametros['neurons']
+                resultados['layers']= parametros['layers']
+                resultados['max_steps']= parametros['max_steps']
+                resultados['signals'] = parametros['signals']
                 
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
             
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
         
         elif self.modelo=='deepAr':
-            for id in self.data.unique_id.unique():
+            print('Entro a DeepAr')
+            for id in self.ids:
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
+                start_time = time.time()
                 parametros, _ = fit.fit_deep_ar(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    feats=self.features,
+                    transf=self.transformation,
+                    signals=self.signals
                 )
                 
-                resultados, predicciones = predict.predict_lstm(
+                performance, predicciones, resultados = predict.predict_deepAr(
                     config=parametros,
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
-                
+
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['years']= parametros['years']
+                resultados['months']= parametros['months']
+                resultados['input_size']= parametros['input_size']
+                resultados['neurons']= parametros['neurons']
+                resultados['layers']= parametros['layers']
+                resultados['max_steps']= parametros['max_steps']
+                resultados['trajectories']= parametros['trajectories']
+                resultados['learning_rate']= parametros['learning_rate']
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
             
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
         
         elif self.modelo=='transformer':
-            for id in self.data.unique_id.unique():
+            for id in self.ids:
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
+                print('Subset')
+                print(subset)
+                
+                start_time = time.time()
                 parametros, _ = fit.fit_transformer(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    feats=self.features,
+                    transf=self.transformation,
+                    signals=self.signals
                 )
                 
-                resultados, predicciones = predict.predict_transformer(
+                performance, predicciones, resultados = predict.predict_transformer(
                     config=parametros,
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
-                
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['input_size'] = parametros['input_size']
+                resultados['neurons'] = parametros['neurons']
+                resultados['conv_size'] = parametros['conv_size']
+                resultados['n_heads'] = parametros['n_heads']
+                resultados['max_steps'] = parametros['max_steps']
+                resultados['learning_rate'] = parametros['learning_rate']
+
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
             
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
 
         elif self.modelo=='nhits':
-            for id in self.data.unique_id.unique():
+            for id in self.ids:
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
+                start_time = time.time()
                 parametros, _ = fit.fit_transformer(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    feats=self.features
                 )
                 
                 resultados, predicciones = predict.predict_transformer(
@@ -148,51 +356,93 @@ class orchestrator:
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
-                
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
             
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
 
         elif self.modelo=='xgb':
-            for id in self.data.unique_id.unique():
+            for id in tqdm(self.ids, desc=f"Entrenando {self.modelo}"):
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
+                print('subset lenght')
+                print(len(subset))
+                print(subset.ds.max())
+                print(subset.ds.min())
 
-                parametros, _ = fit.fit_xgb(
-                    data=subset,
-                    cutoff_date=self.fecha_d_corte,
-                    iteraciones=self.iteraciones,
-                    freak=self.frequencia,
-                    horizon=self.horizonte,
-                    Metric= self.metrica
-                )
-                
-                resultados, predicciones = predict.predict_xgb( 
-                    config=parametros,
-                    data=subset,
-                    cutoff_date=self.fecha_d_corte
-                )
-                
-                self.resultados_gen.append(resultados)
-                self.predicciones_gen.append(predicciones)
+                #offset = 10  # or any small constant appropriate for your data
+                #subset['y'] = subset['y'] + offset
+                if len(subset) >= 52:
+
+                    start_time = time.time()
+                    parametros, _ = fit.fit_xgb(
+                        data=subset,
+                        cutoff_date=self.fecha_d_corte,
+                        iteraciones=self.iteraciones,
+                        freak=self.frequencia,
+                        horizon=self.horizonte,
+                        Metric=self.metrica,
+                        Mes_val=self.mes_val,
+                        feats=self.features,
+                        transf=self.transformation,
+                        signals=self.signals
+                    )
+                    
+                    try:
+                        performance, predicciones, resultados = predict.predict_xgb( 
+                            config=parametros,
+                            data=subset,
+                            cutoff_date=self.fecha_d_corte
+                        )
+
+                        #resultados['xgb_og'] = resultados['xgb_og'] - offset
+                        #resultados['xgb_og'] = resultados['xgb_og'].clip(lower=0)
+                        #resultados['y'] = resultados['y'] - offset
+                        resultados['max_depth']= parametros['max_depth']
+                        resultados['colsample_bytree']= parametros['colsample_bytree']
+                        resultados['subsample']= parametros['subsample']
+                        resultados['alpha']= parametros['alpha']
+                        resultados['eta']= parametros['eta']
+                        resultados['lambdaa']= parametros['lambdaa']
+                        resultados['num_boost_round'] = parametros['num_boost_round'] 
+                        resultados['years']= parametros['years']
+                        resultados['months']= parametros['months']
+                        resultados['signals'] = parametros['signals']
+
+                        end_time = time.time()
+                        elapsed_time = end_time - start_time
+                        resultados['fecha_d_corte'] = self.str_date
+                        resultados['execution_time'] = elapsed_time
+                        self.resultados_gen.append(resultados)
+                        self.predicciones_gen.append(predicciones)
+                    except Exception as e:
+                        print(e)
+                        print(f'No params for {id}')
             
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
-
-        elif self.modelo=='holt-winters':
-            for id in self.data.unique_id.unique():
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
+        
+        # Does not need Exo
+        elif self.modelo=='holt_winters':
+            for id in tqdm(self.ids, desc=f"Entrenando {self.modelo}"):
                 print(f"Procesando ID: {id}")
                 subset = self.data[self.data['unique_id'] == id]
-
+                start_time = time.time()
                 parametros, _ = fit.fit_holt_winters(
                     data=subset,
                     cutoff_date=self.fecha_d_corte,
                     iteraciones=self.iteraciones,
                     freak=self.frequencia,
                     horizon=self.horizonte,
-                    Metric= self.metrica
+                    Metric=self.metrica,
+                    Mes_val=self.mes_val,
+                    transf=self.transformation,
+                    #signals=self.signals
                 )
                 
                 resultados, predicciones = predict.predict_holt_winters(
@@ -200,13 +450,25 @@ class orchestrator:
                     data=subset,
                     cutoff_date=self.fecha_d_corte
                 )
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                resultados['fecha_d_corte'] = self.str_date
+                resultados['execution_time'] = elapsed_time
+                resultados['years']= parametros['years']
+                resultados['months']= parametros['months']
+                
+                resultados['trend_type'] = parametros['trend_type']
+                resultados['seasonal_type'] = parametros['seasonal_type']
+                resultados['damped_trend'] = parametros['damped_trend']
+                resultados['use_boxcox'] = parametros['use_boxcox']
+                resultados['seasonal_periods'] = parametros['seasonal_periods']
                 
                 self.resultados_gen.append(resultados)
                 self.predicciones_gen.append(predicciones)
-            
-            pd.concat(self.resultados_gen).to_csv(f'resultados-{self.modelo}-{self.fecha_d_corte}.csv')
-            pd.concat(self.predicciones_gen).to_csv(f'forecast-{self.modelo}-{self.fecha_d_corte}.csv')
 
+            pd.concat(self.resultados_gen).to_csv(self.file_resultados)
+            pd.concat(self.predicciones_gen).to_csv(self.file_forecast)
+            
         elif self.modelo=='DVAE':
             resultados_gen = []
             predicciones_gen = []

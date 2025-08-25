@@ -3,6 +3,49 @@ import pandas as pd
 import numpy as np
 from utiles import utilities
 
+def convertir_fecha_mensual(fecha_str):
+    meses = {
+        'Ene': '01', 'Feb': '02', 'Mar': '03', 'Abr': '04',
+        'May': '05', 'Jun': '06', 'Jul': '07', 'Ago': '08',
+        'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dic': '12'
+    }
+    mes_abbr, anio = fecha_str.split()
+    return pd.to_datetime(f"{anio}-{meses[mes_abbr]}-01")
+
+def inpc_monthly(datos=None, melted=1):
+    inpc = datos.copy()
+    inpc['ds'] = inpc['ds'].apply(convertir_fecha_mensual)
+    inpc.columns = [col.strip() for col in ['ds', 
+            'Inflacion', 'Subyacente', 'Mercancias', 'Alimentos_bebidas_tabaco',
+            'Mercancias_no_alimenticias', 'Servicios', 'Vivienda', 'Educacion_colegiaturas',
+            'Otros servicios', 'No_subyacente', 'Agropecuarios', 'Frutas_verduras',
+            'Pecuarios', 'Energeticos_tarifas_autorizadas_por_el_gobierno', 'Energeticos',
+            'Tarifas_autorizadas_por_el_gobierno'
+        ]]
+    columnas = inpc.columns.difference(['ds'])
+    # Calculamos el cambio porcentual para cada una
+    for col in columnas:
+        nueva_col = f"{col}"
+        inpc[nueva_col] = round(inpc[col].pct_change(periods=12) * 100, 2)  # cambio porcentual multiplicado por 100
+
+    
+    inpc = inpc.dropna().reset_index(drop=True)
+
+    venta = 4#spans[3]
+    for col in columnas:
+        col_clean = col.strip()  # limpiar espacios en blanco si hay
+        inpc[f'{col_clean}_EMA'] = inpc[col].ewm(span=venta, adjust=False).mean()
+
+    # Dejar en formato largo
+    inpc = inpc.set_index('ds').sort_index().resample('Me').sum().reset_index()
+    if melted==1:
+        df_melt = inpc.melt(id_vars=['ds'], var_name='unique_id', value_name='y')
+
+        return df_melt
+    elif melted==0:
+        return inpc
+
+
 def inpc_data_weekly(total_info=1, datos = None):
     '''
     Parameters
