@@ -1,0 +1,31 @@
+data:
+  csv_path: /path/to/your/timeseries.csv   # ds,unique_id,y
+  context_len: 52
+  horizon: 13
+  stride: 1
+  batch_size: 64
+  num_workers: 0
+  val_split: 0.2
+  normalize: zscore
+  minmax_range: [0.0, 1.0]
+
+model:
+  input_size: 1
+  latent_dim: 32
+  enc_hidden: 128
+  enc_layers: 1
+  dec_hidden: 128
+  dec_layers: 1
+  dropout: 0.1
+  beta_kl: 1.0
+  teacher_forcing: 0.5
+  predict_sigma: false
+
+train:
+  epochs: 50
+  lr: 1e-3
+  weight_decay: 1e-4
+  grad_clip: 1.0
+  seed: 1337
+  device: auto
+  save_dir: runs/dvae
