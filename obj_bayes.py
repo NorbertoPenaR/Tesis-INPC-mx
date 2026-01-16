@@ -1,10 +1,9 @@
-# obj bayes opt
-
+# obj_bayes.py
+# Copyright (c) 2024 Norberto P. R. – All rights reserved.
+# Licensed for private use only.
 
 # Obj Functions
 # tune Example 
-from ray import tune
-from functools import partial
 from sklearn.preprocessing import MinMaxScaler
 ## 
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -40,6 +39,18 @@ logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 from pytorch_lightning.utilities import rank_zero
 rank_zero._should_log = False  # disables rank_zero_info and similar
+
+from mlforecast import MLForecast
+from mlforecast.lag_transforms import RollingMean, ExpandingMean
+from mlforecast.target_transforms import Differences
+from xgboost import XGBRegressor
+from sklearn.preprocessing import FunctionTransformer
+from mlforecast.target_transforms import GlobalSklearnTransformer
+import yaml
+from dvae_v2.train import main as train_main
+from dvae_v2.predict import main as predict_main
+
+sk_log1p = FunctionTransformer(func=np.log1p, inverse_func=np.expm1)
 
 # Lo ideal es que se pueda pasar a la construcción la metrica 
 # a minimizar, la frequencia con la q se quiere predecir
@@ -410,7 +421,9 @@ def obj_xgb(years=None,
             #Features,
             feats=None,
             # Transformaciones
-            transf=None):
+            transf=None,
+            input_mult=None):
+    
     try:
         
         config = {
@@ -429,7 +442,9 @@ def obj_xgb(years=None,
             'freq':freq,
             'feats':int(feats),
             # Transformaciones
-            'transf':transf
+            'transf':transf,
+            # Input Multiplier
+            'input_mult':input_mult
         }
 
         # Rango
@@ -445,125 +460,79 @@ def obj_xgb(years=None,
         data = utilities.features_from_date(data, 'ds')
         for col, max_val in cyclic_cols.items():
             data = utilities.add_cyclic_features(data, col, max_val)
-        # Transformación Senoidal d Variables Temporales
-        #feats = [f"{col}_{trig}" for col in cyclic_cols.keys() for trig in ['cos', 'sin']]
-
-        # Transformaciones
-        if config['transf'] == 0: # Diff 1
-            data[f'y_{inverse_map_tr[0]}'] = data['y'].diff()
-            data = data.dropna()  #El primer valor será NaN
-
-        elif config['transf'] == 1: # Logp1 Diff 
-            data['y_log'] = np.log1p(data['y'])
-            data[f'y_{inverse_map_tr[1]}'] = data['y_log'].diff()
-            data = data.dropna()
-
-        elif config['transf'] == 2:
-            data[f'y_{inverse_map_tr[2]}'] = data['y'].pct_change() * 100
-            data = data.dropna()  #El primer valor será NaN
-            
-        elif config['transf'] == 3: # Logp1
-            data[f'y_{inverse_map_tr[3]}'] = np.log1p(data['y'])
-
-        elif config['transf'] == 4: # none
-            data[f'y_{inverse_map_tr[4]}'] = data['y']
-
-        elif config['transf'] == 5: # Double Trouble
-            data[f'y_{inverse_map_tr[5]}'] = data['y'].diff().diff()
-            data = data.dropna()
 
         # División de Conjuntos.
         x_train, x_val = utilities.split_data_val(data=data, 
                                                 train_years=int(config['years']), 
                                                 months_val=int(config['months']), 
                                                 date='ds')
-        
-        #print(x_train)
+
+        xgb_exo = MLForecast(
+            models=XGBRegressor(
+                n_estimators=config['num_boost_round'], # 200 seems to work fine
+                max_depth=config['max_depth'],
+                learning_rate=config['eta'],
+                subsample=config['subsample'],
+                colsample_bytree=config['colsample_bytree'],
+                random_state=119,
+                reg_alpha=config['alpha'],
+                reg_lambda=config['lambdaa']
+            ),
+            freq=frequency_map[config['freq']],
+            lags=list(range(1,int(52*config['input_mult']+1))),
+            target_transforms=[Differences([1])],
+            #target_transforms=[GlobalSklearnTransformer(sk_log1p), Differences([1])],
+        )
         
         # XGBoost only has 2 options, unless lags are added.
-        if config['feats']==0 or config['feats']==1:
+        if config['feats']==0:
+            xgb_exo.fit(x_train[['ds', 'unique_id', 'y']])
+            dff = xgb_exo.predict(h=len(x_val))
+
+        elif config['feats']==1:
             feats = [f"{col}_{trig}" for col in cyclic_cols.keys() for trig in ['cos', 'sin']]
+            xgb_exo.fit(x_train[['ds', 'unique_id', 'y']+feats], static_features=[])
+            future_df = xgb_exo.make_future_dataframe(h=len(x_val))
+            future_df = utilities.features_from_date(future_df, 'ds')
+            for col, max_val in cyclic_cols.items():
+                future_df = utilities.add_cyclic_features(future_df, col, max_val)
+            
+            dff = xgb_exo.predict(h=len(x_val), X_df=future_df)
+            
         elif config['feats']==2:# Features Senoidales added.
             # Senoidales
-            senoidales, _, _ = utilities.generar_senoidales_exogenas(x_train[f'y_{inverse_map_tr[transf]}'],
-                                                                    top_k=config['signals'],
-                                                                    extra_steps=config['h']+ len(x_val))
+            senoidales, _, _ = utilities.generar_senoidales_exogenas(x_train[f'y'],
+                                                    top_k=int(config['signals']),
+                                                    extra_steps=config['h']+ len(x_val))
             # Entrenamiento
             for c in senoidales.columns:
                 x_train[c] = (senoidales[c]).values[:len(x_train)]
-            # Validación
-            for c in senoidales.columns:
-                x_val[c] = (senoidales[c]).values[len(x_train):(len(x_train) + len(x_val))]
-            feats = [f"{col}_{trig}" for col in cyclic_cols.keys() for trig in ['cos', 'sin']]
-            feats += list(senoidales.columns)[:-1]
+            
+            feats = [f"{col}_{trig}" for col in cyclic_cols.keys() for trig in ['cos']]
+            feats += list(senoidales.columns)[:-1] 
+            xgb_exo.fit(x_train[['ds', 'unique_id', 'y']+feats], static_features=[])
+            
+            future_df = xgb_exo.make_future_dataframe(h=len(x_val))
+            future_df = utilities.features_from_date(future_df, 'ds')
 
-        # Calcular la correlación entre las series
-        #corr_matrix = x_train.drop(columns=["ds", 'unique_id']).corr()
-
-        '''# Plot del heatmap
-        plt.figure(figsize=(10,8))
-        sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", center=0)
-        plt.title("Matriz de Correlación entre Series Temporales")
-        plt.show()'''
+            for col, max_val in cyclic_cols.items(): # Temporales
+                future_df = utilities.add_cyclic_features(future_df, col, max_val)
+            for c in senoidales.columns: # Fast Fourier Transform 
+                #x_val[c] = (senoidales[c]).values[len(x_train):(len(x_train) + len(x_val))]
+                future_df[c] = (senoidales[c]).values[len(x_train):(len(x_train) + len(x_val))]
+            dff = xgb_exo.predict(h=len(x_val), X_df=future_df)
         
-        #print(feats)
-        # Matrices de XGBoost
-        dtrain = xgb.DMatrix(x_train[feats], label=x_train[f'y_{inverse_map_tr[transf]}'], feature_names=feats)
-        dval = xgb.DMatrix(x_val[feats], label=x_val[f'y_{inverse_map_tr[transf]}'], feature_names=feats)
+        x_val = x_val.merge(dff[['ds', 'unique_id', 'XGBRegressor']], on=['ds', 'unique_id'], how='inner')
 
-        # Matriz con toda la historia
-        param = {
-            'max_depth': config['max_depth'],
-            'colsample_bytree': config['colsample_bytree'],
-            'subsample': config['subsample'],
-            'seed': 0,
-            'verbosity': 0,
-            'alpha': config['alpha'],
-            'eta': config['eta'],
-            'lambda': config['lambdaa'],
-            'tree_method': 'hist',
-            'gamma':.1,
-            'max_bin':512,
-            'eval_metric':"mae"#'mape'
-        }
-        # Train XGBoost model on training set
-        xgb_model_train = xgb.train(
-            param,
-            dtrain,
-            num_boost_round=config['num_boost_round'],
-            early_stopping_rounds=50,
-            verbose_eval=False,
-            evals=[(dval, 'val')])
-
-        # Evaluate model on test set and return score
-        x_val['yhat'] = xgb_model_train.predict(dval)
-
-        transf = config['transf']
-        if transf == 0:
-            x_val['yhat_og'] = utilities.reconstruccion_diff(x_val['yhat'], x_train['y'].iloc[-1])
-        elif transf == 1:
-            x_val['yhat_og'] = utilities.reconstruccion_log_diff(x_val['yhat'], x_train['y'].iloc[-1])
-        elif transf == 2:
-            x_val['yhat_og'] = utilities.reconstruccion_pct(x_val['yhat'], x_train['y'].iloc[-1])
-        elif transf == 3:
-            x_val['yhat_og'] = np.expm1(x_val['yhat'])
-        elif transf == 4:
-            x_val['yhat_og'] = x_val['yhat']
-        elif transf == 5:
-            y_t_1 = x_train['y'].iloc[-1]
-            y_t_2 = x_train['y'].iloc[-2]
-            x_val['yhat_og'] = utilities.reconstruccion_diff2(x_val['yhat'], y_t_1, y_t_2)
-
-
-        x_val['mape'] = x_val.apply(accuracy.mape, args=('yhat_og','y'), axis=1)
+        x_val['mape'] = x_val.apply(accuracy.mape, args=('XGBRegressor','y'), axis=1)
+        # MAPE
         mape_total = x_val['mape'].mean()
-        
         # MAE
-        mae = mean_absolute_error(x_val['y'], x_val['yhat_og'])
+        mae = (mean_absolute_error(x_val['y'], x_val['XGBRegressor']))
         # RMSE
-        rmse = root_mean_squared_error(x_val['y'], x_val['yhat_og'])
+        rmse = root_mean_squared_error(x_val['y'], x_val['XGBRegressor'])
         # MSE
-        mse = mean_squared_error(x_val['y'], x_val['yhat_og'])
+        mse = mean_squared_error(x_val['y'], x_val['XGBRegressor'])
 
         # With Bayesian optimization we return the error, but since we maximizing
         # we have to send a negative version of it. 
@@ -937,7 +906,8 @@ def obj_lstm(data=None,
                     #early_stop_patience_steps=-1,
                     scaler_type='standard',
                     enable_progress_bar=False,
-                    random_seed=119
+                    random_seed=119,
+                    batch_size=64
                     #start_padding_enabled=True
                     ),
         ],
@@ -1226,6 +1196,7 @@ def obj_deep_ar(data=None,
                     scaler_type='identity',
                     enable_progress_bar=False,
                     random_seed=119,
+                    windows_batch_size=64
                     #start_padding_enabled=True
                     ),
         ],
@@ -1458,7 +1429,8 @@ def obj_transformer(data=None,
                                 early_stop_patience_steps=-1,
                                 enable_progress_bar=False,
                                 start_padding_enabled=False,
-                                random_seed=119),
+                                random_seed=119,
+                                windows_batch_size=128),
         ],
         freq=frequency_map[config['freq']]
     )
@@ -1718,6 +1690,216 @@ def obj_nhits(config=None, data=None):
 
 # DVAE
 
+def obj_dvae(data=None,
+            years=None,
+            months=None,
+            h=None,
+            feats=None,
+            signals=None,
+            #use_fourier=None,
+            input_size=None,
+            max_steps=None,
+            neurons=None,
+            layers=None,
+            dropout=None,
+            beta_kl=None,
+            teacher_forcing=None,
+            batch_size=None,
+            transf=None,
+            dimension=None, 
+            metric=None, # The one we want to maximize
+            freq=None # Defines de freakuency
+            ):
+    
+    config = {'years':years,
+        'months':months,
+        'h':int(h),
+        'input_size':int(input_size),
+        'neurons':neurons,
+        'layers':layers,
+        'max_steps':max_steps,
+        'freq':freq,
+        'metric':metric,
+        'feats':int(feats),
+        'signals': int(signals),
+        'transf':transf,
+        'batch_size': int(batch_size),
+        'feats':int(feats),
+        'dropout':dropout,
+        'beta_kl':beta_kl,
+        'teacher_forcing':teacher_forcing,
+        'dimension':dimension
+    }
+
+    # Conversión de Neuronas. 
+    config['neurons'] = 2 ** int(config['neurons'])
+
+    # conversión de Batch Size.
+    # 2^1 = 2, ..., 2^5= 32, 2^6= 64, 2^7= 128, 2^8= 256
+    config['batch_size'] = 2 ** int(config['batch_size'])
+
+    # Conversion de Dimensión.
+    # Un buen rango es entre 8, 16 y 32. More than that, seems like overfitting to me
+    # (And according to the tests I have ran.) So it would be (2, 6)
+    config['dimension'] = 2 ** int(config['dimension'])
+    
+    #print(config)
+    str_datee = data.ds.max()
+    str_datee = str(str_datee)[: 10]
+
+    # División de Conjuntos.
+    x_train, x_val = utilities.split_data_val(data=data, 
+                                            train_years=int(config['years']), 
+                                            months_val=int(config['months']), 
+                                            date='ds')
+
+    if config['feats'] == 0:
+        use_time_features=False
+        use_fft_features=False
+
+    elif config['feats'] == 1:
+        use_time_features=True
+        use_fft_features=False
+
+    elif config['feats'] == 2:
+        use_time_features=True
+        use_fft_features=True
+
+    x_train.to_csv('temporal_file_d3vae.csv')
+
+    #print('Hola')
+    #print(round(float(beta_kl), 2))
+    #print('Hola22')
+    config['h'] =  config['h'] + len(x_val)
+    
+    config_d3vae = {
+        'data': {
+            'csv_path': 'temporal_file_d3vae.csv',
+            'context_len': config['h']*config['input_size'],
+            'horizon': config['h'],
+            'stride': 1,
+            'batch_size': int(config['batch_size']),
+            'num_workers': 0,
+            'val_split': 0.3,
+            'normalize': 'zscore',
+            'models_to_train': ["d3vae"],
+            'minmax_range': [0.0, 1.0],
+            'time_features': ["dow", "month", "weekofyear", "dayofyear"],   # produce sin/cos por cada una "dow", 
+            'use_time_features': use_time_features,
+            'use_fourier': False,
+            'use_fft_features': use_fft_features,
+            'fft_top_k': config['signals'],
+            'fft_scale_range': [0.0, 1.0], # escala de las ondas
+            'fft_include_signal': False,# agrega la señal reconstruida como extra, en general, es mejor no incluirla por que 
+                                        # Leakea información pasada, y hace que los modelos aprendan a seguir la señal, la cual
+                                        # Será erronea a futuro. Es mejor aprendan sin la señal. 
+            'fft_window': "hann",       # opcional: "hann" o null, hann por default.
+            'freq': frequency_map[config['freq']], # El sistema puede inferirla, pero es mejor definirla.
+            'split_mode': 'time',   # <- usa holdout temporal por serie
+            'cutoff': str_datee, #'2023-09-18',
+            'from_date': '2000-01-01',
+            'id': 'Inflacion'
+        },
+
+        'model': {
+            'input_size': 1,
+            'latent_dim': int(config['dimension']),  # 32
+            'enc_hidden': int(config['neurons']),    # 128
+            'enc_layers': int(config['layers']),     # 3
+            'dec_hidden': int(config['neurons']),    # 128
+            'dec_layers': int(config['layers']),     # 3
+            'dropout': round(float(config['dropout']), 3),       # .1
+            'beta_kl': round(float(config['beta_kl']), 3),#config['beta_kl'],       # .5
+            'teacher_forcing': round(float(config['teacher_forcing'])),#0.2,
+            'predict_sigma': False
+        },
+
+        'train': {
+            'beta_kl': 1,
+            'kl_warmup_epochs': 10,
+            'teacher_forcing_start': None,
+            'teacher_forcing_end': None,
+            'early_stop_patience': 15,
+            'epochs': int(config['max_steps']),
+            'lr': 1e-4,
+            'weight_decay': 1e-3,
+            'grad_clip': 1.0,
+            'seed': 119,
+            'device': 'auto',
+            'save_dir': 'runs/dvae_v2'
+        }
+    }
+
+    with open('d3vae_config.yaml', 'w') as f:
+        yaml.safe_dump(config_d3vae, f)
+    # Se entrena el Modelo
+    train_main('d3vae_config.yaml')
+    # Se carga la configuración. # Pero esto es más para temas de visualización.     
+    cfg = yaml.safe_load(open('d3vae_config.yaml'))
+    #ctx = cfg['data']['context_len']; H = cfg['data']['horizon']
+
+    predict_main('d3vae_config.yaml', 'runs/dvae_v2/d3vae/best.ckpt ', f'temporal_file_d3vae.csv', 100, 'auto')
+    preds = pd.read_csv(f'temporal_file_d3vae.csv')
+    preds['ds'] = pd.to_datetime(preds['ds'])
+    preds.rename(columns={'mean':'d3vae'}, inplace=True)
+    #print('Predicciones')
+    #print(preds.head())
+    #print('X_val')
+    #print(x_val)
+
+    comparativa = preds.merge(x_val, on=['unique_id', 'ds'], how='inner')
+    #print('Comparativa. Merged')
+    #print(comparativa)
+
+    preds_gen = preds.merge(weekly_inpc, on=['unique_id', 'ds'], how='left') # Just to check whether the system 
+    # is picking the best config to predict the coming future, or if its overfitting on the validation set. =( 
+    preds_gen.dropna(inplace=True)
+    print(mean_absolute_error(preds_gen['y'], preds_gen['d3vae']))
+    
+    y_true = comparativa['y'].to_numpy()
+    y_pred = comparativa['d3vae'].to_numpy()
 
 
+    #pen_l = utilities.linearity_penalty(y_true, y_pred)
+
+    # MAE
+    mae = mean_absolute_error(comparativa['y'], comparativa['d3vae'])
+    
+    if utilities.is_linear_by_fit(y_pred):
+        pen_l = 5  # castigar al modelo
+    else:
+        pen_l = 0
+
+    score = -(mae + 10*pen_l)
+    return score
+
+    if mae<.3:
+        mae = .9
+
+    # RMSE
+    rmse = root_mean_squared_error(comparativa['y'], comparativa['d3vae'])
+    # MAPE
+    comparativa['mape'] = comparativa.apply(accuracy.mape, args=('d3vae', 'y'), axis=1)
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['d3vae'])
+
+    total_mape = comparativa['mape'].mean()
+
+    # With Bayesian optimization we return the error, but since we maximizing
+    # we have to send a negative version of it. 
+    if config['metric'] == 0:
+        return -total_mape
+        #tune.report({"error": mape_total})
+
+    elif config['metric'] == 1:
+        return -mae
+        #tune.report({"error": mae})
+
+    elif config['metric'] == 2:
+        return -rmse
+        #tune.report({"error": rmse})
+
+    elif config['metric'] == 3:
+        return -mse
+        #tune.report({"error": mse})
 

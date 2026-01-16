@@ -10,41 +10,62 @@ import numpy as np
 
 from neuralforecast import NeuralForecast
 from neuralforecast.models import DeepAR, VanillaTransformer, LSTM, RNN, NHITS
-from neuralforecast.losses.pytorch import DistributionLoss, MQLoss, MAE, RMSE, MAPE
-import numpy as np
+from neuralforecast.losses.pytorch import DistributionLoss, MQLoss, MAE, RMSE, MAPE, MSE
 import tensorflow as tf
 from ray import tune
 from functools import partial
 from sklearn.preprocessing import MinMaxScaler
 import accuracy
 
+
+
 # Mapeo de Metricas
 metric_map = {
     'MAE': MAE(),
     'MAPE': MAPE(),
     'RMSE': RMSE(),
+    'MSE': MSE()
 }
 
 # Clasical
 
 # Holt Winters
 def predict_holt_winters(config=None, data=None, cutoff_date=None):
-    
+    unseen = data[data['ds']>cutoff_date]
     data = data[data['ds']<=cutoff_date]
     data['ds'] = pd.to_datetime(data['ds'])
+
 
     x_train, x_val = utilities.split_data_val(data=data, 
                                             train_years=config['years'], 
                                             months_val=config['months'], 
                                             date='ds')
+    # Cálculo de % cambio sobre los niveles originales
+    x_train['y_pct'] = x_train['y'].pct_change() * 100
+    x_train = x_train.dropna()  # ¡Importante! El primer valor será NaN
 
-    mu = x_train['y'].mean()
-    sigma = x_train['y'].std()
-    x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
-    scaler = MinMaxScaler(feature_range=(1, 2))
-    data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
-    x_train['y_scaled'] = data_scaled
-    features_df, t_total, info_frec = utilities.generar_senoidales_exogenas(x_train['y_scaled'], top_k=4, extra_steps=config['h'])
+    # id
+    id_holt = list(x_train.unique_id.unique())[0]
+
+    # Estandarizar
+    mu = x_train['y_pct'].mean()
+    sigma = x_train['y_pct'].std()
+    x_train['y_pct_estandarizada'] = (x_train['y_pct'] - mu) / sigma
+
+    # Escalar
+    scaler = MinMaxScaler(feature_range=(1, 10))
+    x_train['y_scaled'] = scaler.fit_transform(x_train['y_pct_estandarizada'].values.reshape(-1, 1))
+
+    # Id 
+    id_holt = list(x_train.unique_id.unique())[0]
+
+    #mu = x_train['y'].mean()
+    #sigma = x_train['y'].std()
+    #x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
+    #scaler = MinMaxScaler(feature_range=(1, 10))
+    #data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
+    #x_train['y_scaled'] = data_scaled
+    #features_df, t_total, info_frec = utilities.generar_senoidales_exogenas(x_train['y_scaled'], top_k=4, extra_steps=config['h'])
     
     HoltWinters = ExponentialSmoothing(x_train['y_scaled'],
                     dates=x_train['ds'],
@@ -53,28 +74,41 @@ def predict_holt_winters(config=None, data=None, cutoff_date=None):
                     seasonal_periods= config['seasonal_periods'],#int(info_frec[1]['periodo']),
                     damped_trend=config['damped_trend'],  # True / False
                     use_boxcox=config['use_boxcox'],
-                    #freq=config['freq']
+                    freq=config['freq']
                     ).fit()
     
-    forecast = HoltWinters.forecast(steps=len(x_val))
-    #Val = Val.set_index('ds')
-    x_val['yhat'] = forecast
-    x_val['yhat'].fillna(0, inplace=True)
-    x_val['yhat'] = x_val['yhat'].clip(lower=0)
+    #forecast = HoltWinters.forecast(steps=len(x_val))
+    # Predicciones
     H = pd.DataFrame()
-    H['yhat'] = HoltWinters.forecast(steps=52+len(x_val))
+    H['holt_w'] = HoltWinters.forecast(steps=52+len(x_val))
+
+    # Paso 4.1: Invertir escalado
+    H['holt_w_v2'] = scaler.inverse_transform(H[['holt_w']])
+
+    # Paso 4.2: Invertir estandarización
+    H['holt_w_pct'] = H['holt_w_v2'] * sigma + mu
+
+    # Paso 4.3: Reconstruir serie original desde el último valor real
+    start_value = x_train['y'].iloc[-1]
+    H['HoltW_og'] = utilities.reconstruccion_pct(H['holt_w_pct'], start_value)
+    
+    '''H['holt_w_v2'] = scaler.inverse_transform([H['holt_w'].values])[0]
+    H['HoltW_og']  = (H['holt_w_v2']*sigma)+mu'''
+
     H = H.reset_index().rename(columns={'index':'ds'})
-    # MAE
-    mae = mean_absolute_error(x_val['y'], x_val['yhat'])
-    # RMSE
-    rmse = root_mean_squared_error(x_val['y'], x_val['yhat'])
-    #print(rmse)
-    return H, x_val
+    H['unique_id'] = id_holt
+
+    results = H.merge(unseen, on=['unique_id', 'ds'], how='inner')
+    results['diff'] = abs(results['y'] - results['HoltW_og'])
+    results['mape'] = results.apply(accuracy.mape, args=('HoltW_og', 'y'), axis=1)
+    results['acc'] = round(100 - results['mape'] , 4)
+    return results, H
 # Tree Methods - ML
 
 # XGB 
 def predict_xgb(config=None, data=None, cutoff_date=None):
     unseen = data[data['ds']>cutoff_date]
+    # We sent it to 1, so we can 
     unseen['ds'] = unseen['ds'].apply(lambda x: x.replace(day=1))
 
     data = data[data['ds']<=cutoff_date]
@@ -167,14 +201,21 @@ def predict_rnn(config=None, data=None, cutoff_date=None):
                                             train_years=config['years'], 
                                             months_val=config['months'], 
                                             date='ds')
-
-    mu = x_train['y'].mean()
-    sigma = x_train['y'].std()
-    x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
+    
+    x_train['y_pct'] = x_train['y'].pct_change() * 100
+    x_train = x_train.dropna()
+    mu = x_train['y_pct'].mean()
+    sigma = x_train['y_pct'].std()
+    x_train['y_pct_estandarizada'] = (x_train['y_pct'] - mu) / sigma
     scaler = MinMaxScaler(feature_range=(0, 1))
-    data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
-    x_train['y_scaled'] = data_scaled
-    features_df, t_total, info_frec = utilities.generar_senoidales_exogenas(x_train['y_scaled'], top_k=4, extra_steps=config['h'])
+    x_train['y_scaled'] = scaler.fit_transform(x_train['y_pct_estandarizada'].values.reshape(-1, 1))
+
+    #mu = x_train['y'].mean()
+    #sigma = x_train['y'].std()
+    #x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
+    #scaler = MinMaxScaler(feature_range=(0, 1))
+    #x_train['y_scaled'] = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
+    #features_df, t_total, info_frec = utilities.generar_senoidales_exogenas(x_train['y_scaled'], top_k=4, extra_steps=config['h'])
     
     horizonte = config['h']
     nf = NeuralForecast(
@@ -196,8 +237,9 @@ def predict_rnn(config=None, data=None, cutoff_date=None):
         freq=config['freq']
     )
     # It trains the model
-    nf.fit(df=x_train, target_col='y_scaled')
+    nf.fit(df=x_train, target_col='y_scaled', val_size=52)
     Y_hat_df = nf.predict()
+    
     #Y_hat_df['ds'] = Y_hat_df['ds'].apply(utilities.align_to_semi_monthly)
     Y_hat_df['rnn_v2'] = scaler.inverse_transform([Y_hat_df['RNN'].values])[0]
     Y_hat_df['rnn_og']  = (Y_hat_df['rnn_v2']*sigma)+mu

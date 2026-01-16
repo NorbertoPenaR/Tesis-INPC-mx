@@ -1,5 +1,5 @@
 # main.py
-# Copyright (c) 2024 Norberto P. R. – All rights reserved.
+# Copyright (c) 2025 Norberto P. R. – All rights reserved.
 # Licensed for private use only.
 
 import os
@@ -21,6 +21,7 @@ print("📁 Luego, súbelo aquí para continuar con el análisis.")
 pais = 'mex'
 
 inpc_path_Q = 'ca56_2018a.csv'
+inpc_path_Q = 'ca56_2018a-2025_10_14.csv'
 inpc_Q = process_data.limpiar_csv_inegi(inpc_path_Q)
 weekly_inpc = process_data.inpc_data_weekly(datos=inpc_Q)
 
@@ -45,6 +46,7 @@ all_ids = ['Inflacion', 'Subyacente', 'Mercancias', 'Alimentos_bebidas_tabaco',
  'Otros servicios', 'No_subyacente', 'Agropecuarios', 'Frutas_verduras',
  'Pecuarios', 'Energeticos_tarifas_autorizadas_por_el_gobierno', 'Energeticos',
  'Tarifas_autorizadas_por_el_gobierno']
+
 # Modelos disponibles
 # lstm - Done
 # rnn - Done
@@ -55,16 +57,11 @@ all_ids = ['Inflacion', 'Subyacente', 'Mercancias', 'Alimentos_bebidas_tabaco',
 # holt-winters - Done
 # D^3VAE - Needs testing. 
 
-# Download hourly data for the last 5 days
-
 # Para DeepAr el horizonte tiene q ser 26 para obtener buenos resultados. 52 needs to be tested again. 
 # H = 26 / 6 meses hacia el futuro. 
 # Y el learning rate necesita seguir fijo, 25 iteraciones. 
 
 simulation_dates_mex = utilities.ultimos_dias_meses(n=4, frecuencia=1, referencia='2025-02-01')
-#print(simulation_dates_mex)
-#aires_ids = sellin_weekly[sellin_weekly['familia']=='AIAC'].unique_id.unique()
-#print(len(aires_ids))
 
 print(simulation_dates_mex)
 '''transformaciones_map = {
@@ -75,26 +72,29 @@ print(simulation_dates_mex)
     'none':4,
     'diff2':5
 }'''
-clima_data = pd.read_csv('historico_clima_mex.csv')
-clima_data['unique_id'] = clima_data['Estado']+'_'+clima_data['tipo']
-clima_data.rename(columns={'fecha':'ds', 'valor':'y'}, inplace=True)
-clima_data['ds'] = pd.to_datetime(clima_data['ds'])
-#clima_data = clima_data.set_index('ds').sort_index().resample('Me').sum().reset_index()
 
+#clima_data = pd.read_csv('historico_clima_mex.csv')
+#clima_data['unique_id'] = clima_data['Estado']+'_'+clima_data['tipo']
+#clima_data.rename(columns={'fecha':'ds', 'valor':'y'}, inplace=True)
+#clima_data['ds'] = pd.to_datetime(clima_data['ds'])
+#clima_data = clima_data.set_index('ds').sort_index().resample('Me').sum().reset_index()
 #ids_clima = ['Nacional_PREC', 'Nacional_TMAX', 'Nacional_TMIN', 'Nacional_TMED']
+
 transformaciones = ['diff', 'diff_logp1', 'pct', 'logp1', 'diff2']# 'none',
 
 all_models = ['xgb', 'holt_winters', 'lstm', 'rnn', 'deepAr', 'transformer']
 all_models = ['lstm', 'rnn', 'xgb', 'deepAr']
 
 # 4 out of 7, falta deepar y Transformer, también integrar DVAE de alguna manera. 
-all_models =['transformer'
+all_models =[#'transformer'
             #'deepAr',
             #'rnn'
             #'fft', 
             #'holt_winters'
             #'xgb',
             #'holt_winters'
+            #'lstm'
+            'd3vae'
             ]
 
 #all_models = ['lstm', #'rnn',# 'xgb', 'holt_winters'
@@ -106,29 +106,34 @@ all_models =['transformer'
              # ventaja dada su arquitectura, y sus celulas ocultas. -Neuroas-
              # Puertas para olvidar o recordar. 
 
+clima_mex = pd.read_csv('estados_principales_tmax_aires.csv')
+list(clima_mex.unique_id.unique())
 simulation_dates = utilities.ultimos_dias_meses(n=6, frecuencia=3, referencia='2025-01-01')
 #for señales in [2, 4, 6, 8, 10, 12, 14]:
-for j in range(3):
+for j in range(1):
             
     for sm_date in tqdm(simulation_dates,  desc=f"Running Simulation"):
         #j = 1
         #print(sm_date)
         for math_model in all_models:
         #for trns in transformaciones:
-            orc  =  orchestrator(data = monthly_inpc, #monthly_inpc, #weekly_inpc,
+            orc  =  orchestrator(data = clima_mex,#weekly_inpc, #monthly_inpc, #weekly_inpc,
                                 fecha_d_corte= sm_date, 
-                                iteraciones= 15,
+                                iteraciones= 25,
                                 frequencia='W-mon',
                                 horizonte=26, # 52/2 = 26
                                 modelo=math_model,
                                 metrica='MAE',
-                                ids=['Inflacion'],#ids_clima,#all_ids,#['Pecuarios'],
+                                ids=[list(clima_mex.unique_id.unique())],
+                                #ids_clima,#all_ids,#['Pecuarios'],
                                 mes_val=4,
                                 features=j,
                                 transformacion='diff',
-                                signals=4)
+                                signals=8)
             
             orc.train_n_predict()
+
+
 
 '''total = 
 cut_date = '2025-01-01'

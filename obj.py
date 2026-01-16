@@ -29,7 +29,7 @@ print(results.get_best_result(metric="score", mode="min").config)
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import xgboost as xgb
 from utiles import utilities
-from sklearn.metrics import root_mean_squared_error, mean_absolute_error
+from sklearn.metrics import root_mean_squared_error, mean_absolute_error, mean_squared_error
 from hyperopt import hp
 from ray.tune.search.hyperopt import HyperOptSearch
 import pandas as pd
@@ -60,7 +60,6 @@ warnings.filterwarnings("ignore")
 from pytorch_lightning.utilities import rank_zero
 rank_zero._should_log = False  # disables rank_zero_info and similar
 
-
 # Lo ideal es que se pueda pasar a la construcción la metrica 
 # a minimizar, la frequencia con la q se quiere predecir
 # Dado el agrupamiento de los datos.
@@ -80,20 +79,34 @@ def obj_holt_winters(config=None, data=None):
                                             months_val=config['months'], 
                                             date='ds')
     
-    mu = x_train['y'].mean()
+    # Cálculo de % cambio sobre los niveles originales
+    x_train['y_pct'] = x_train['y'].pct_change() * 100
+    x_train = x_train.dropna()  # ¡Importante! El primer valor será NaN
+
+    # id
+    id_holt = list(x_train.unique_id.unique())[0]
+
+    # Estandarizar
+    mu = x_train['y_pct'].mean()
+    sigma = x_train['y_pct'].std()
+    x_train['y_pct_estandarizada'] = (x_train['y_pct'] - mu) / sigma
+
+    # Escalar
+    scaler = MinMaxScaler(feature_range=(1, 10))
+    x_train['y_scaled'] = scaler.fit_transform(x_train['y_pct_estandarizada'].values.reshape(-1, 1))
+
+    '''mu = x_train['y'].mean()
     sigma = x_train['y'].std()
     x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
     scaler = MinMaxScaler(feature_range=(1, 10))
     data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
-    x_train['y_scaled'] = data_scaled
+    x_train['y_scaled'] = data_scaled'''
+
+
     #Train = x_train.copy()
     #Train['ds'] = pd.to_datetime(Train['ds'])
     features_df, t_total, info_frec = utilities.generar_senoidales_exogenas(x_train['y_scaled'], top_k=4, extra_steps=config['h'])
 
-    '''print(x_train)
-    print('Estaconalidad')
-    print(int(info_frec[0]['periodo']))
-    print(info_frec)'''
     HoltWinters = ExponentialSmoothing(x_train['y_scaled'],
                     dates=x_train['ds'],
                     trend=config['trend_type'],  # 'add'
@@ -101,24 +114,61 @@ def obj_holt_winters(config=None, data=None):
                     seasonal_periods= config['seasonal_periods'],#int(info_frec[1]['periodo']),
                     damped_trend=config['damped_trend'],  # True / False
                     use_boxcox=config['use_boxcox'],
-                    #freq=config['freak']
+                    freq=config['freq']
                     ).fit()
     
-    forecast = HoltWinters.forecast(steps=len(x_val))
+    H = pd.DataFrame()
+    H['holt_w'] = HoltWinters.forecast(steps=52+len(x_val))
+
+    # Paso 4.1: Invertir escalado
+    H['holt_w_v2'] = scaler.inverse_transform(H[['holt_w']])
+
+    # Paso 4.2: Invertir estandarización
+    H['holt_w_pct'] = H['holt_w_v2'] * sigma + mu
+
+    # Paso 4.3: Reconstruir serie original desde el último valor real
+    start_value = x_train['y'].iloc[-1]
+    H['HoltW_og'] = utilities.reconstruccion_pct(H['holt_w_pct'], start_value)
+
+    #H['holt_w_v2'] = scaler.inverse_transform([H['holt_w'].values])[0]
+    #H['HoltW_og']  = (H['holt_w_v2']*sigma)+mu
+
+    H = H.reset_index().rename(columns={'index':'ds'})
+    H['unique_id'] = id_holt
+
     #Val = Val.set_index('ds')
-    x_val['yhat'] = forecast
-    x_val['yhat'].fillna(0, inplace=True)
-    x_val['yhat'] = x_val['yhat'].clip(lower=0)
+    x_val = x_val.merge(H, on=['ds', 'unique_id'], how='inner')
+
+    #x_val['yhat_og'].fillna(0, inplace=True)
+    #x_val['yhat_og'] = x_val['yhat'].clip(lower=0)
+    #print(x_val)
     #Val['yhat'] = Val['yhat'].astype(int)
-    
+
+    # MAPE
+    x_val['mape'] = x_val.apply(accuracy.mape, args=('HoltW_og','y'), axis=1)
+    mape_total = x_val['mape'].mean()
     # MAE
-    mae = mean_absolute_error(x_val['y'], x_val['yhat'])
+    mae = mean_absolute_error(x_val['y'], x_val['HoltW_og'])
     # RMSE
-    rmse = root_mean_squared_error(x_val['y'], x_val['yhat'])
-    # Send the current training result back to Tune
-    tune.report({"rmse": rmse})
+    rmse = root_mean_squared_error(x_val['y'], x_val['HoltW_og'])
+    # MSE
+    mse = mean_squared_error(x_val['y'], x_val['HoltW_og'])
+
+    # The error is send back to "TUNA". 
+    if config['metric'] == 'MAPE':
+        tune.report({"error": mape_total})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
 
 ## Seasonal Naive
+# BASELINE
 
 # Machine Learning
 
@@ -204,11 +254,21 @@ def obj_xgb(config=None, data=None):
     mae = mean_absolute_error(x_val['y'], x_val['yhat'])
     # RMSE
     rmse = root_mean_squared_error(x_val['y'], x_val['yhat'])
+    # MSE
+    mse = mean_squared_error(x_val['y'], x_val['yhat'])
 
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": mape_total})
-    else:
-        tune.report({"rmse": mae})
+        tune.report({"error": mape_total})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
 
 # Neural Networks
 
@@ -226,6 +286,7 @@ def obj_rnn(config=None, data=None):
     mu = x_train['y'].mean()
     sigma = x_train['y'].std()
     x_train['y_estandarizada'] = (x_train['y']-mu)/sigma
+
     # Escalado de Datos
     scaler = MinMaxScaler(feature_range=(0, 1))
     data_scaled = scaler.fit_transform(x_train['y_estandarizada'].values.reshape(-1, 1))
@@ -266,12 +327,23 @@ def obj_rnn(config=None, data=None):
     rmse = root_mean_squared_error(comparativa['y'], comparativa['rnn_og'])
     # MAPE
     comparativa['mape'] = comparativa.apply(accuracy.mape, args=('rnn_og', 'y'), axis=1)
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['rnn_og'])
 
     total_mape = comparativa['mape'].mean()
+
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": total_mape})
-    else:
-        tune.report({"rmse": mae})
+        tune.report({"error": total_mape})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
 
 # LSTM
 def obj_lstm(config=None, data=None):
@@ -328,11 +400,21 @@ def obj_lstm(config=None, data=None):
     mae = mean_absolute_error(comparativa['y'], comparativa['lstm_og'])
     # RMSE
     rmse = root_mean_squared_error(comparativa['y'], comparativa['lstm_og'])
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['lstm_og'])
 
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": total_mape})
-    else:
-        tune.report({"rmse": mae})
+        tune.report({"error": total_mape})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
     # WE are returning MAE. 
     # Objetive Funtion Construcction must Match 
     # The construcción of the Predict Function.
@@ -372,7 +454,7 @@ def obj_deep_ar(config=None, data=None):
                     early_stop_patience_steps=-1,
                     scaler_type='standard',
                     enable_progress_bar=False,
-                    start_padding_enabled=True
+                    #start_padding_enabled=True
                     ),
         ],
         freq=config['freq']
@@ -390,12 +472,21 @@ def obj_deep_ar(config=None, data=None):
     mae = mean_absolute_error(comparativa['y'], comparativa['DeepAr_og'])
     # RMSE
     rmse = root_mean_squared_error(comparativa['y'], comparativa['DeepAr_og'])
-    
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['DeepAr_og'])
+
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": total_mape})
-    else:
-        tune.report({"rmse": rmse})
-    #MAPE
+        tune.report({"error": total_mape})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
 
 # Transformer
 def obj_transformer(config=None, data=None):
@@ -438,18 +529,28 @@ def obj_transformer(config=None, data=None):
     Y_hat_df['Transformer_v2'] = scaler.inverse_transform([Y_hat_df['VanillaTransformer'].values])[0]
     Y_hat_df['Transformer_og']  = (Y_hat_df['Transformer_v2']*sigma)+mu
     comparativa = Y_hat_df.merge(x_val, on=['unique_id', 'ds'], how='inner')
-    comparativa['mape'] = comparativa.apply(accuracy.mape, args=('DeepAr_og', 'y'), axis=1)
+    comparativa['mape'] = comparativa.apply(accuracy.mape, args=('Transformer_og', 'y'), axis=1)
     # MAPE
     total_mape = comparativa['mape'].mean()    
     # MAE
     mae = mean_absolute_error(comparativa['y'], comparativa['Transformer_og'])
     # RMSE
     rmse = root_mean_squared_error(comparativa['y'], comparativa['Transformer_og'])
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['Transformer_og'])
 
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": total_mape})
-    else:
-        tune.report({"rmse": rmse})
+        tune.report({"error": total_mape})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
 
 # NHITS
 def obj_nhits(config=None, data=None):
@@ -503,12 +604,23 @@ def obj_nhits(config=None, data=None):
     rmse = root_mean_squared_error(comparativa['y'], comparativa['nhits_og'])
     # MAPE
     comparativa['mape'] = comparativa.apply(accuracy.mape, args=('nhits_og', 'y'), axis=1)
-
     total_mape = comparativa['mape'].mean()
+    # MSE
+    mse = mean_squared_error(comparativa['y'], comparativa['nhits_og'])
+
+    # The error is send back to "TUNA". 
     if config['metric'] == 'MAPE':
-        tune.report({"rmse": total_mape})
-    else:
-        tune.report({"rmse": mae})
+        tune.report({"error": total_mape})
+
+    elif config['metric'] == 'MAE':
+        tune.report({"error": mae})
+
+    elif config['metric'] == 'RMSE':
+        tune.report({"error": rmse})
+
+    elif config['metric'] == 'MSE':
+        tune.report({"error": mse})
+
 # Candidatos a ser Agregados. #NBEATS no lo sé. En teoría, NHITs es el sucesor.
 
 # Posiblemente ~ Informer

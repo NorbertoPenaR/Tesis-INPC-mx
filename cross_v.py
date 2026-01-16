@@ -1,3 +1,6 @@
+# Cross Validation
+# Statistical Models
+
 # fit_bayes_opt.py
 # Copyright (c) 2024 Norberto P. R. – All rights reserved.
 # Licensed for private use only.
@@ -17,13 +20,16 @@ from functools import partial
 from bayes_opt import BayesianOptimization
 
 import os
-import obj_bayes
+import obj_cv_bayes
 
-# Silenciar el logger de ray.tune
-import logging
+simulation_dates = utilities.ultimos_dias_meses(n=6, frecuencia=3, referencia='2025-01-01')
+
+
+from time import time
+
 metric_map = {
-    'MAE': 1,
     'MAPE': 0,
+    'MAE': 1,
     'RMSE': 2,
     'MSE': 3
 }
@@ -41,74 +47,46 @@ transformaciones_map = {
     'diff2':5
 }
 
-def fit_avg(data=None,
-            horizon=None,
-            Mes_val=None,
-            transf=None, 
-            signals=None,
-            cutoff_date=None, 
-            iteraciones=None
-            ):
-    
-    avg_param_space = {
-        # Temporal 
-        'years':(7, 20),
-        'months':(Mes_val,Mes_val)
+# Get the current time before forecasting starts, this will be used to measure the execution time
+#init = time()
+
+# Get the current time after the forecasting ends
+#end = time()
+
+# Calculate and print the total time taken for the forecasting in minutes
+#print(f'Forecast Minutes: {(end - init) / 60}')
+
+# FFT
+def fit_fft_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+            Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
+            signals=None):
+    fft_params={
+        'years':10,
+        'months':3,
+        'h':52,
     }
 
-    data['ds'] = pd.to_datetime(data['ds'])
-    data = data[data['ds']<=cutoff_date]
+# Naive_Avg_Random_Walk
+def fit_avg_rwd_naive_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+        Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
+        signals=None):
     
-    avg_partial = partial(obj_bayes.obj_avg, data=data)
-
-    # Initialize Bayesian optimizer
-    optimizer = BayesianOptimization(f=avg_partial,
-                                    pbounds=avg_param_space,
-                                    random_state=119,
-                                    verbose=2,
-                                    allow_duplicate_points=False)
-
-    # Perform Bayesian optimization
-    optimizer.maximize(init_points=5, n_iter=iteraciones)
-    dic_params = dict()
-    dic_params = optimizer.max['params']
-    dic_params['accuracy'] = optimizer.max['target']
-    return dic_params, dic_params['accuracy']
-    
-
-#def fit_benckmarks(data=None, 
-#                   horion=None,
-#                   Mes_val=None,
-#                   ):
-    
-def fit_fft(data=None, cutoff_date=None, iteraciones=None, freak=None,
-            Metric=None, horizon=None, Mes_val=None, transf=None, signals=None):
-    
-    fft_param_space = {
-        # Temporal 
-        'years':(7, 20),
-        'months':(Mes_val,Mes_val),
+    classic_params = {
+        'years':(5,25),
+        'months':(3,4),
         # Metric
-        'metric': (metric_map[Metric],metric_map[Metric]),
-        # Trasnformation
-        'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]),
-        # Future Steps 
+        'metric': (metric_map[Metric],metric_map[Metric]), 
         'h':(horizon,horizon),
-        # Signals
-        'signals':(1, 30),
-        # Frequency 
-        'freq': (freq_map[freak], freq_map[freak]), # 0 'W-mon', 1 'ME'.
+        'freq':(freq_map[freak], freq_map[freak]), # 0 'W-mon', 1 'ME'.
     }
-
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
-    
-    fft_partial = partial(obj_bayes.obj_fft, data=data)
+
+    avg_rwd_naive_partial = partial(obj_cv_bayes.obj_avg_rwd_naive_cv, data=data)
 
     # Initialize Bayesian optimizer
-    optimizer = BayesianOptimization(f=fft_partial,
-                                    pbounds=fft_param_space,
+    optimizer = BayesianOptimization(f=avg_rwd_naive_partial,
+                                    pbounds=classic_params,
                                     random_state=119,
                                     verbose=2,
                                     allow_duplicate_points=False)
@@ -121,9 +99,10 @@ def fit_fft(data=None, cutoff_date=None, iteraciones=None, freak=None,
     return dic_params, dic_params['accuracy']
 
 # Holt Winters
-def fit_holt_winters(data=None, cutoff_date=None, iteraciones=None, freak=None,
-                    Metric=None, horizon=None, Mes_val=None, transf=None):
-
+def fit_holt_winters_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+            Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
+            signals=None):
+    
     holt_param_space = {
         # Holt Parameters / Binary 
         "trend_type":(0,1),
@@ -131,13 +110,13 @@ def fit_holt_winters(data=None, cutoff_date=None, iteraciones=None, freak=None,
         "damped_trend": (0,1),
         "use_boxcox":(0,1),
         # Data Splitting Parameters / Continuous
-        'years':(7, 30),
+        'years':(12, 22),
         'months':(Mes_val,Mes_val),
         # Metric
         'metric': (metric_map[Metric],metric_map[Metric]), 
         # Future Steps 
         'h':(horizon,horizon),
-        "seasonal_periods": (94, 104),
+        "seasonal_periods": (99, 99),
         # The right seasonal period is achieved by applying 
         # the Discrete Fourier Transformation to our
         # Target Variable.
@@ -150,7 +129,7 @@ def fit_holt_winters(data=None, cutoff_date=None, iteraciones=None, freak=None,
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
 
-    holt_w_partial = partial(obj_bayes.obj_holt_winters, data=data)
+    holt_w_partial = partial(obj_cv_bayes.obj_holt_winters_cv, data=data)
 
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=holt_w_partial,
@@ -167,7 +146,7 @@ def fit_holt_winters(data=None, cutoff_date=None, iteraciones=None, freak=None,
     return dic_params, dic_params['accuracy']
 
 # XGBoost
-def fit_xgb(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+def fit_xgb_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
             Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
             signals=None):
     
@@ -175,13 +154,13 @@ def fit_xgb(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'years':(10, 25),
         'months':(Mes_val, Mes_val),
         # XGB Params
-        'max_depth':(2, 15),
-        'colsample_bytree':(.5,.9),
-        'subsample':(.6,.95),
+        'max_depth':(5, 15),
+        'colsample_bytree':(.5,.8),
+        'subsample':(.5,.8),
         'alpha':(0,5),
-        'eta':(.01,.6),
+        'eta':(.3,.3),
         'lambdaa':(0,5),
-        'num_boost_round':(50, 150),
+        'num_boost_round':(50, 300),
         # Frequency
         'freq': (freq_map[freak], freq_map[freak]),
         # Metric
@@ -195,15 +174,14 @@ def fit_xgb(data=None, cutoff_date=None, iteraciones=None, freak=None,
         # Trasnformation
         'transf':(transformaciones_map[transf],
                   transformaciones_map[transf]),
-        # Input Multiplier.
-        'input_mult':(1,6)
+        'input_mult':(2,5)
     }
 
     # Ingesta de Datos con Fecha de Corte
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
     #if len(data)>52:
-    xgb_partial = partial(obj_bayes.obj_xgb, data=data)
+    xgb_partial = partial(obj_cv_bayes.obj_xgb_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=xgb_partial,
                                         pbounds=xgb_params,
@@ -212,25 +190,26 @@ def fit_xgb(data=None, cutoff_date=None, iteraciones=None, freak=None,
                                         allow_duplicate_points=True)
 
     # Perform Bayesian optimization
-    optimizer.maximize(init_points=5, n_iter=25)
+    optimizer.maximize(init_points=5, n_iter=iteraciones)
     dic_params = dict()
     dic_params = optimizer.max['params']
     dic_params['accuracy'] = optimizer.max['target']
     return dic_params, dic_params['accuracy']
-    
+
 # RNN
-def fit_rnn(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+def fit_rnn_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
             Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
             signals=None):
     # NO TOCAR 
     rnn_params = {
         # Data Splitting Params
-        'years':(5, 12),
+        'years':(10, 20),
         'months':(Mes_val,Mes_val),
         # Future Steps
         'h':(horizon, horizon),
         # Neural Network Parameters
-        'input_size':(6,9),
+        'input_size':(6,9), #Tesis Originales
+        #'input_size':(1,2), # venta Mex
         'neurons':(3,4),
         'layers':(1,2),
         "max_steps": (10, 70),
@@ -244,14 +223,15 @@ def fit_rnn(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'signals':(signals, signals),
         # Trasnformation
         'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]) 
+                  transformaciones_map[transf]),
+        'batch_size':(6, 8) #Tesis
+        #'batch_size':(2, 2) # Venta Mabe
     }
-
     # Ingesta de Datos con Fecha de Corte
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
 
-    rnn_partial = partial(obj_bayes.obj_rnn, data=data)
+    rnn_partial = partial(obj_cv_bayes.obj_rnn_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=rnn_partial,
                                         pbounds=rnn_params,
@@ -260,27 +240,27 @@ def fit_rnn(data=None, cutoff_date=None, iteraciones=None, freak=None,
                                         allow_duplicate_points=False)
 
     # Perform Bayesian optimization
-    optimizer.maximize(init_points=3, n_iter=iteraciones)
+    optimizer.maximize(init_points=5, n_iter=iteraciones)
     dic_params = dict()
     dic_params = optimizer.max['params']
     dic_params['accuracy'] = optimizer.max['target']
     return dic_params, dic_params['accuracy']
 
 # LSTM
-def fit_lstm(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+def fit_lstm_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
             Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
             signals=None):
 
     lstm_params = {
         # Data Splitting Params
-        'years':(8, 15),
+        'years':(8, 18),
         'months':(Mes_val,Mes_val),
         # Future Steps
         'h':(horizon, horizon),
         # Neural Network Parameters
-        'input_size':(4,10), # No meter menos 
+        'input_size':(3,6), # No meter menos 
         'layers':(1,3), # 1 y 2 funconan bien con 0 y 1 features
-        "max_steps": (25, 100), # NO CAMBIAR
+        "max_steps": (10, 100), # NO CAMBIAR
         'neurons':(2, 5), # NO CAMBIAR  (3,4) funciona bien con 0 y 1 features
         #'learning_rate': (0.001, 0.001), # (0.001, 0.01)
         # Frequency
@@ -293,14 +273,16 @@ def fit_lstm(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'feats':(feats,feats),
         # Trasnformation
         'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]) 
+                  transformaciones_map[transf]),
+        # Batch Size
+        'batch_size':(6, 8)
     }
 
     # Ingesta de Datos con Fecha de Corte
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
-    
-    lstm_partial = partial(obj_bayes.obj_lstm, data=data)
+
+    lstm_partial = partial(obj_cv_bayes.obj_lstm_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=lstm_partial,
                                     pbounds=lstm_params,
@@ -309,14 +291,14 @@ def fit_lstm(data=None, cutoff_date=None, iteraciones=None, freak=None,
                                     allow_duplicate_points=False)
     
     # Perform Bayesian optimization
-    optimizer.maximize(init_points=3, n_iter=iteraciones)
+    optimizer.maximize(init_points=5, n_iter=iteraciones)
     dic_params = dict()
     dic_params = optimizer.max['params']
     dic_params['accuracy'] = optimizer.max['target']
     return dic_params, dic_params['accuracy']
 
 # Deep Ar
-def fit_deep_ar(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+def fit_deep_ar_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
                 Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
                 signals=None):
 
@@ -334,7 +316,9 @@ def fit_deep_ar(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'h':(horizon, horizon),
         # Neural Network Params
         'input_size':(2, 5),
-        'layers':(1,4),
+        'layers':(1,2), # con una capa salen bien, más cuando hay senoidales. 
+        # Y cuando se usaron 4 capas, no es como que haya resultado bien. 
+        # Salio una predicción Lineal. Lo mejor sería evitarlas. 
         'trajectories':(100, 100),
         'learning_rate':(0.01, 0.01),#(0.001, 0.01),#(1e-4, 1e-1),
         "max_steps": (25, 100),
@@ -349,13 +333,15 @@ def fit_deep_ar(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'feats':(feats,feats),
         # Trasnformation
         'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]) 
+                  transformaciones_map[transf]),
+        # Batch Size
+        'batch_size':(6, 8)
     }
     # Ingesta de Datos con Fecha de Corte
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
 
-    deepAr_partial = partial(obj_bayes.obj_deep_ar, data=data)
+    deepAr_partial = partial(obj_cv_bayes.obj_deep_ar_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=deepAr_partial,
                                     pbounds=deep_ar_params,
@@ -378,20 +364,20 @@ def fit_deep_ar(data=None, cutoff_date=None, iteraciones=None, freak=None,
 # Uno consistirá en incluir las variables exogenas temporales, 
 # senoidales y el componente de la señal
 
-def fit_transformer(data=None, cutoff_date=None, iteraciones=None, freak=None, 
+def fit_transformer_cv(data=None, cutoff_date=None, iteraciones=None, freak=None, 
                     Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
                     signals=None):
 
     transformer_params = {
-        'years':(4, 15),
+        'years':(10, 20),
         'months':(Mes_val, Mes_val),
         # Future Steps
         'h':(horizon, horizon),
         # Params
         'input_size':(2,6),
-        'neurons':(2,6),
+        'neurons':(3,7),
         'conv_size':(2,2),
-        'n_heads':(2, 4), # Using more than 10 heads is pointless, given the fact that 2 heads were better than 14 heads. 
+        'n_heads':(2, 5), # Using more than 10 heads is pointless, given the fact that 2 heads were better than 14 heads. 
         "max_steps": (25, 125),
         # Frequency
         'freq': (freq_map[freak], freq_map[freak]),
@@ -405,13 +391,15 @@ def fit_transformer(data=None, cutoff_date=None, iteraciones=None, freak=None,
         'signals':(signals, signals),
         # Trasnformation
         'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]) 
+                  transformaciones_map[transf]),
+        # Batch Size
+        'batch_size':(7, 7)
     }
     # Ingesta de Datos con Fecha de Corte
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
 
-    transformer_partial = partial(obj_bayes.obj_transformer, data=data)
+    transformer_partial = partial(obj_cv_bayes.obj_transformer_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=transformer_partial,
                                         pbounds=transformer_params,
@@ -425,81 +413,34 @@ def fit_transformer(data=None, cutoff_date=None, iteraciones=None, freak=None,
     dic_params = optimizer.max['params']
     dic_params['accuracy'] = optimizer.max['target']
     return dic_params, dic_params['accuracy']
- 
-# NHITS
-def fit_nhits(data=None, cutoff_date=None, iteraciones=None, freak=None, 
-            Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
-            signals=None):
 
-    nhits_params={
-        # Split Data Params
-        'years':(3, 8),
-        'months':(Mes_val,Mes_val),
-        # Future Steps
-        'h':(horizon, horizon),
-        # Neural Network Parameters
-        'input_size':(1, 6),
-        'neurons':(7,10),
-        "max_steps": (500, 2500),
-        #"n_pool_kernel_size": tune.choice([3 * [2], 3 * [4], 3 * [8], [8, 4, 1], [16, 8, 1]]),
-        #"n_freq_downsample": tune.choice([[168, 24, 1],
-        #                                [24, 12, 1],
-        #                                [180, 60, 1],
-        #                                [60, 8, 1],
-        #                                [40, 20, 1]]),
-        "learning_rate": (1e-4, 1e-1),
-        # Frequency
-        'freq': (freq_map[freak], freq_map[freak]),
-        # Metric
-        'metric': (metric_map[Metric],metric_map[Metric]),
-        # Signals
-        'signals':(signals, signals),
-        # Features
-        'feats':(feats,feats),
-        # Trasnformation
-        'transf':(transformaciones_map[transf],
-                  transformaciones_map[transf]) 
-    }
-    # Ingesta de Datos con Fecha de Corte
-    data['ds'] = pd.to_datetime(data['ds'])
-    data = data[data['ds']<=cutoff_date]
+def fit_patch_cv(data=None, cutoff_date=None, iteraciones=None, freak=None,
+                Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
+                signals=None):
+    
+    print('Patch - Transformer')
+    
 
-    nhits_partial = partial(obj, data=data)
-    # Initialize Bayesian optimizer
-    optimizer = BayesianOptimization(f=nhits_partial,
-                                    pbounds=nhits_params,
-                                    random_state=42,
-                                    verbose=2,
-                                    allow_duplicate_points=False)
-
-    # Perform Bayesian optimization
-    optimizer.maximize(init_points=5, n_iter=iteraciones)
-    dic_params = dict()
-    dic_params = optimizer.max['params']
-    dic_params['accuracy'] = optimizer.max['target']
-    return dic_params, dic_params['accuracy']
-
-# DVAE
-def fit_d3vae(data=None, cutoff_date=None, iteraciones=None, freak=None, 
-            Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
-            signals=None):
+def fit_dvae_cv(data=None, cutoff_date=None, iteraciones=None, freak=None,
+                Metric=None, horizon=None, Mes_val=None, feats=None, transf=None,
+                signals=None):
     
     dvae_params = {
-        'years':(15, 25),
+        'years':(12, 20),
         'months':(Mes_val, Mes_val),
         # Future Steps
         'h':(horizon, horizon),
         # Params
-        'input_size':(2,3),
+        'input_size':(1,4),
         'neurons':(4,8), #
-        'layers':(1,3),
+        'layers':(1,2),
         #'batch_size':(4, 8), # cantidad d sequencias a ser procesadas en paralelo.
-        "max_steps": (25, 125),
-        'batch_size':(7, 9),
-        'dropout':(0, 0.3),
+        "max_steps": (50, 125),
+        'batch_size':(5, 5),
+        'dropout':(0, 0),
         'beta_kl':(.2, .5),
-        'teacher_forcing':(.2, .6),
-        'dimension':(4,8),
+        'teacher_forcing':(.5, .7),
+        'dimension':(2,5),
         # Frequency
         'freq': (freq_map[freak], freq_map[freak]),
         # Metric
@@ -518,7 +459,7 @@ def fit_d3vae(data=None, cutoff_date=None, iteraciones=None, freak=None,
     data['ds'] = pd.to_datetime(data['ds'])
     data = data[data['ds']<=cutoff_date]
 
-    transformer_partial = partial(obj_bayes.obj_dvae, data=data)
+    transformer_partial = partial(obj_cv_bayes.obj_dvae_cv, data=data)
     # Initialize Bayesian optimizer
     optimizer = BayesianOptimization(f=transformer_partial,
                                         pbounds=dvae_params,

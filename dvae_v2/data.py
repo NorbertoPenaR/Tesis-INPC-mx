@@ -347,7 +347,7 @@ class WindowedTS(Dataset):
             #if cfg := getattr(self, "_cfg_data", None):  # lo seteará build_dataloaders
             #    print('Hola?')
             if cfg.get("use_fft_features", False):
-                print('We are here')
+                #print('We are here')
                 X_hist, _, _ = fft_sin_features_from_train(
                     y=y_norm,                                  # puedes usar y_norm o y (raw)
                     top_k=int(cfg.get("fft_top_k", 4)),
@@ -358,8 +358,8 @@ class WindowedTS(Dataset):
                     include_signal=bool(cfg.get("fft_include_signal", True)),
                 )
                     
-            print(X_hist.shape)
-            print(X_time.shape)
+            #print(X_hist.shape)
+            #print(X_time.shape)
 
             X = np.concatenate([X_time, X_hist], axis=1).astype(np.float32) if (X_time.size or X_hist.size) else np.zeros((T,0),np.float32)
             

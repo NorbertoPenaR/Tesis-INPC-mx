@@ -11,6 +11,307 @@ from dateutil.relativedelta import relativedelta
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error, mean_squared_error
 
 class utilities:
+    
+    @staticmethod
+    def rolling_linear_trend(
+        df: pd.DataFrame,
+        n: int,
+        stride: int | None = None,
+        h_future: int = 0,
+        ds_col: str = "ds",
+        y_col: str = "y",
+        out_col: str | None = None,
+        agg: str = "mean",              # {"mean","last","first"}
+        freq: str | None = None,        # pandas offset alias for future ds; inferred if None
+        use_elapsed_time: bool = False  # if True, fit on elapsed time (real deltas) instead of index
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """
+        Fit a linear regression on each rolling window of length n, predict the next n observations,
+        slide by `stride`, and aggregate overlaps into a trend column. Optionally extrapolate `h_future`
+        steps beyond the end and return a future DataFrame with the trend.
+
+        Parameters
+        ----------
+        df : DataFrame with [ds_col, y_col]
+        n : int
+            Window length and forecast horizon per window (fit n, predict next n).
+        stride : int | None
+            Step size between windows. Default = 1 (fully overlapping). Set to n to avoid overlap.
+        h_future : int
+            Number of future time steps to generate and fill with the extrapolated trend.
+        ds_col, y_col : str
+            Time and value column names.
+        out_col : str | None
+            Name of the output trend column (default: f"trend_lr_{n}").
+        agg : {"mean","last","first"}
+            How to merge overlapping predictions within the same timestamp.
+        freq : str | None
+            Pandas frequency for future timestamps (e.g., "D","W","MS"). If None, try to infer.
+        use_elapsed_time : bool
+            If True, regress on actual elapsed time (in days) instead of integer indices.
+
+        Returns
+        -------
+        (df_with_trend, df_future_or_None)
+        """
+        if out_col is None:
+            out_col = f"trend_lr_{n}"
+        if stride is None:
+            stride = 1
+        if stride <= 0:
+            raise ValueError("stride must be a positive integer.")
+        if n < 2:
+            raise ValueError("n must be at least 2.")
+
+        # Sort and copy
+        df = df.copy()
+        df = df.sort_values(ds_col).reset_index(drop=True)
+
+        y = df[y_col].to_numpy(dtype=float)
+        T = len(df)
+        T_ext = T + max(0, h_future)
+
+        # Build time axis for regression
+        if use_elapsed_time:
+            ds = pd.to_datetime(df[ds_col])
+            # elapsed (in days) from the first timestamp for the in-sample part
+            t_in = (ds - ds.iloc[0]).dt.total_seconds().to_numpy() / (24 * 3600.0)
+            # future time axis extends with equal steps (assume last step equals median diff)
+            if T >= 2:
+                diffs = np.diff(t_in)
+                step = np.median(diffs) if len(diffs) > 0 else 1.0
+            else:
+                step = 1.0
+            t_full = np.concatenate([t_in, t_in[-1] + step * np.arange(1, h_future + 1)])
+        else:
+            t_full = np.arange(T_ext, dtype=float)
+
+        # Accumulators for aggregation
+        pred_sum = np.zeros(T_ext, dtype=float)
+        pred_cnt = np.zeros(T_ext, dtype=int)
+        pred_first = np.full(T_ext, np.nan)
+        pred_last  = np.full(T_ext, np.nan)
+
+        # Fit windows only where we have n in-sample points
+        # Each window predicts the next n points (can spill into the future portion)
+        for start in range(0, T - n + 1, stride):
+            fit_lo = start
+            fit_hi = start + n          # [fit_lo, fit_hi)
+            pred_lo = fit_hi
+            pred_hi = min(fit_hi + n, T_ext)
+
+            y_win = y[fit_lo:fit_hi]
+            # guard for NaNs/missing
+            mask = np.isfinite(y_win)
+            if mask.sum() < max(2, int(0.6 * n)):
+                continue
+
+            t_win = t_full[fit_lo:fit_hi][mask]
+            y_win = y_win[mask]
+
+            # linear fit: y = a * t + b
+            a, b = np.polyfit(t_win, y_win, 1)
+
+            if pred_lo < pred_hi:
+                t_pred = t_full[pred_lo:pred_hi]
+                y_pred = a * t_pred + b
+
+                if agg == "mean":
+                    pred_sum[pred_lo:pred_hi] += y_pred
+                    pred_cnt[pred_lo:pred_hi] += 1
+                elif agg == "first":
+                    take = np.isnan(pred_first[pred_lo:pred_hi])
+                    tmp = pred_first[pred_lo:pred_hi]
+                    tmp[take] = y_pred[take]
+                    pred_first[pred_lo:pred_hi] = tmp
+                elif agg == "last":
+                    pred_last[pred_lo:pred_hi] = y_pred
+                else:
+                    raise ValueError("agg must be one of {'mean','first','last'}")
+
+        # Resolve aggregation
+        if agg == "mean":
+            trend_full = np.divide(
+                pred_sum, pred_cnt,
+                out=np.full(T_ext, np.nan, dtype=float),
+                where=pred_cnt > 0
+            )
+        elif agg == "first":
+            trend_full = pred_first
+        else:
+            trend_full = pred_last
+
+        # Attach in-sample trend
+        df[out_col] = trend_full[:T]
+
+        # Build future dataframe if requested
+        df_future = None
+        if h_future > 0:
+            # Generate future ds
+            if freq is None:
+                # try to infer frequency from ds_col
+                try:
+                    inferred = pd.infer_freq(pd.to_datetime(df[ds_col]))
+                except Exception:
+                    inferred = None
+                freq_use = inferred
+                if freq_use is None:
+                    # fallback: use median delta
+                    ds = pd.to_datetime(df[ds_col])
+                    if len(ds) >= 2:
+                        delta = (ds.diff().median())
+                        # coerce to a pandas offset string if possible; if not, use DateOffset
+                        if pd.isna(delta):
+                            delta = pd.Timedelta(days=1)
+                    else:
+                        delta = pd.Timedelta(days=1)
+                    future_ds = pd.to_datetime(df[ds_col].iloc[-1]) + pd.to_timedelta(
+                        np.arange(1, h_future + 1)
+                    ) * delta / pd.Timedelta(1, unit=delta.unit)
+                    future_ds = pd.DatetimeIndex(future_ds)
+                else:
+                    future_ds = pd.date_range(
+                        start=pd.to_datetime(df[ds_col].iloc[-1]),
+                        periods=h_future + 1,
+                        freq=freq_use
+                    )[1:]
+            else:
+                future_ds = pd.date_range(
+                    start=pd.to_datetime(df[ds_col].iloc[-1]),
+                    periods=h_future + 1,
+                    freq=freq
+                )[1:]
+
+            df_future = pd.DataFrame({
+                ds_col: future_ds,
+                out_col: trend_full[T:T_ext]
+            }).reset_index(drop=True)
+
+        return df, df_future
+
+    @staticmethod
+    def add_time_sine_features(
+        df: pd.DataFrame,
+        ds_col: str = "ds",
+        levels=("second","minute","hour","dow","dom","doy","week","month","quarter"),
+        prefix="t",
+        only_sin: bool = True,
+    ):
+        """
+        Agrega columnas senoidales según niveles seleccionados.
+        - df[ds_col] debe ser datetime (si no, lo convierte).
+        - 'dom' usa días reales del mes (periodo variable).
+        - 'doy' usa 366 para cubrir años bisiestos.
+        - 'week' usa ISO week (1..53).
+        Retorna (df_out, added_cols) donde added_cols es la lista de columnas creadas (en orden).
+        """
+        out = df.copy()
+        if not np.issubdtype(out[ds_col].dtype, np.datetime64):
+            out[ds_col] = pd.to_datetime(out[ds_col])
+        dt = out[ds_col].dt
+
+        added = []
+
+        def _add(name, value, period):
+            ang = 2 * np.pi * (value.astype(float) / period)
+            sname = f"{prefix}_sin_{name}"
+            out[sname] = np.sin(ang)
+            added.append(sname)
+            if not only_sin:
+                cname = f"{prefix}_cos_{name}"
+                out[cname] = np.cos(ang)
+                added.append(cname)
+
+        if "second"  in levels: _add("second",  dt.second,              60)
+        if "minute"  in levels: _add("minute",  dt.minute,              60)
+        if "hour"    in levels: _add("hour",    dt.hour,                24)
+        if "dow"     in levels: _add("dow",     dt.dayofweek,            7)  # 0..6
+        if "dom"     in levels:
+            dom = dt.day.values - 1
+            dim = dt.days_in_month.values  # periodo por fila
+            ang = 2 * np.pi * (dom / dim)
+            sname = f"{prefix}_sin_dom"
+            out[sname] = np.sin(ang)
+            added.append(sname)
+            if not only_sin:
+                cname = f"{prefix}_cos_dom"
+                out[cname] = np.cos(ang); added.append(cname)
+        if "doy"     in levels: _add("doy",     dt.dayofyear - 1,      366)
+        if "week"    in levels:
+            wk = out[ds_col].dt.isocalendar().week.astype(int)  # 1..53
+            _add("week", wk - 1, 53)
+        if "month"   in levels: _add("month",   dt.month - 1,           12)
+        if "quarter" in levels: _add("quarter", dt.quarter - 1,          4)
+
+        return out, added
+    
+    @staticmethod
+    def infer_freq_safe(df: pd.DataFrame, ds_col="ds"):
+        """Intenta inferir la frecuencia; si falla, usa la mediana de diferencias."""
+        if not np.issubdtype(df[ds_col].dtype, np.datetime64):
+            d = pd.to_datetime(df[ds_col])
+        else:
+            d = df[ds_col]
+        freq = pd.infer_freq(d)
+        if freq is None:
+            step = d.diff().dropna().median()
+            freq = step
+        return freq
+    
+    @staticmethod
+    def make_future_index(df: pd.DataFrame, periods: int, ds_col="ds", freq=None):
+        if freq is None:
+            freq = utilities.infer_freq_safe(df, ds_col=ds_col)
+        last = pd.to_datetime(df[ds_col].iloc[-1])
+        return pd.date_range(start=last, periods=periods+1, freq=freq)[1:]
+    
+    @staticmethod
+    def prepare_future_exo_with_sines(
+        hist_df: pd.DataFrame,
+        exo_cols: list,
+        periods: int,
+        ds_col: str = "ds",
+        sine_levels=("hour","dow","week","month","quarter"),
+        only_sin: bool = True,
+        prefix="t",
+    ):
+        """
+        Crea df futuro con ds y MISMAS exógenas que usaste (si alguna exógena no existe para futuro, la llena con 0),
+        y además agrega senoidales según sine_levels.
+        Retorna (fut_df, sine_cols)
+        """
+        fut_idx = utilities.make_future_index(hist_df, periods=periods, ds_col=ds_col)
+        fut = pd.DataFrame({ds_col: fut_idx})
+
+        # Si tus exógenas futuras ya existen en otro df, puedes fusionarlas aquí antes de las senoides.
+        # Por defecto, se crean con 0 si no están.
+        for c in exo_cols:
+            if c not in fut.columns and c != ds_col:
+                fut[c] = 0.0
+
+        fut, sine_cols = utilities.add_time_sine_features(
+            fut, ds_col=ds_col, levels=sine_levels, prefix=prefix, only_sin=only_sin
+        )
+
+        # Asegura el orden exacto de exo_cols si lo necesitas para el modelo (encoder/decoder)
+        for c in exo_cols:
+            if c not in fut.columns:
+                fut[c] = 0.0
+        fut = fut[[ds_col] + [c for c in exo_cols if c != ds_col] + [c for c in fut.columns if c.startswith(prefix+"_")]]
+        return fut, sine_cols
+
+    def is_linear_by_fit(yhat, tol=0.1):
+        yhat = np.asarray(yhat, dtype=float)
+        x = np.arange(len(yhat), dtype=float)
+        A = np.vstack([x, np.ones_like(x)]).T
+        m, b = np.linalg.lstsq(A, yhat, rcond=None)[0]
+        y_lin = m*x + b
+        amp = max(np.ptp(yhat), np.std(yhat), 1e-9)
+        rel_rmse = np.sqrt(np.mean((yhat - y_lin)**2)) / amp
+        print(rel_rmse)
+        print(rel_rmse < tol)
+
+        return rel_rmse < tol
 
     # ---------- utilidades ----------
     def slope_match_penalty(y, yhat, delta=None, schedule="linear",
@@ -64,13 +365,12 @@ class utilities:
         #print(r2, cr, ss)
         near_linear = (r2 > lin_r2) or ((cr < lin_curv) and (ss < lin_sstd))
         print('Predicción Lineal?')
+        print(r2)
         print(near_linear)
         if not near_linear: return 0.0
         return (w_turn*utilities.turn_penalty(y, yhat) +
                 w_slope*utilities.slope_match_penalty(y, yhat, delta=None, schedule="linear",
                                             asym_up=1.0, asym_down=1.6))
-
-
 
     # pause 
     '''def slope_match_penalty(y, yhat, delta=None, schedule="linear",
@@ -120,7 +420,6 @@ class utilities:
         m = np.abs(d) <= delta
         huber = np.where(m, 0.5*(d**2)/delta, np.abs(d) - 0.5*delta)
         return float(huber.mean())
-
 
     def mae_with_shape_penalties(y_true, y_pred,
                                 lam_curv=0.2,   # suaviza dientes/cohetes

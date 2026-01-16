@@ -163,7 +163,7 @@ def load_model(ckpt: str, device: torch.device):
         setattr(model, "_expected_exog", exog_size)
         if hasattr(model, "cvae"):
             setattr(model.cvae, "_expected_exog", exog_size)
-        print(f"[load_model] Detecté input_size entrenado={1+exog_size} (exog_size={exog_size}). Tipo={'D3VAE' if is_d3 else 'CVAE'}.")
+        #print(f"[load_model] Detecté input_size entrenado={1+exog_size} (exog_size={exog_size}). Tipo={'D3VAE' if is_d3 else 'CVAE'}.")
     except Exception:
         pass
 
@@ -265,9 +265,9 @@ def prepare_contexts(df: pd.DataFrame, context_len: int, cfg_data: dict, expecte
                 include_signal=bool(cfg_data.get("fft_include_signal", True)),
             )
 
-        print(X_time_hist.shape)
-        print(X_fft_hist.shape)
-        print(X_four_hist.shape)
+        #print(X_time_hist.shape)
+        #print(X_fft_hist.shape)
+        #print(X_four_hist.shape)
 
         # --- CONCAT EXÓGENAS ---
         X_hist = np.concatenate([Z for Z in [X_time_hist, #X_four_hist, 
@@ -282,8 +282,8 @@ def prepare_contexts(df: pd.DataFrame, context_len: int, cfg_data: dict, expecte
         #X_hist = _pad_or_trunc(X_hist, expected_exog)
         #X_fut  = _pad_or_trunc(X_fut,  expected_exog)
 
-        print(X_hist.shape)
-        print(X_fut.shape)
+        #print(X_hist.shape)
+        #print(X_fut.shape)
 
         # --- Cortar contexto y preparar tensores ---
         cx_y = y_norm[-context_len:]
@@ -378,7 +378,7 @@ def main(config_path: str, ckpt_path: str, out_path: str, samples: int, device_f
             })
 
     out_df = pd.DataFrame(rows); out_df.to_csv(out_path, index=False); 
-    print(f"Saved forecasts to {out_path}")
+    #print(f"Saved forecasts to {out_path}")
 
 if __name__ == "__main__":
     import argparse

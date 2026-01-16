@@ -90,6 +90,7 @@ def main(config_path: str):
 
     set_seed(train_cfg.get("seed", 1337))
     device = get_device(train_cfg.get("device","auto"))
+    print(device)
     root_save = train_cfg.get("save_dir", "runs/dvae"); os.makedirs(root_save, exist_ok=True)
 
     # dataloaders (idéntico a tu script actual)
@@ -145,7 +146,7 @@ def main(config_path: str):
         epochs = train_cfg["epochs"]
 
         save_dir = os.path.join(root_save, name); os.makedirs(save_dir, exist_ok=True)
-        print(f"\n=== Entrenando {name.upper()} ===")
+        #print(f"\n=== Entrenando {name.upper()} ===")
 
         for epoch in range(1, epochs+1):
             if warmup_epochs > 0:
@@ -156,7 +157,7 @@ def main(config_path: str):
                 core.teacher_forcing = tf_start + (tf_end - tf_start) * frac
 
             model.train(); losses=[]
-            for batch in tqdm(train_dl, desc=f"{name} Epoch {epoch}/{epochs} [train]"):
+            for batch in train_dl:#tqdm(train_dl):#, desc=f"{name} Epoch {epoch}/{epochs} [train]"):
                 opt.zero_grad()
                 loss, parts = _forward_and_loss_train(model, batch, device)
                 loss.backward()
@@ -167,7 +168,7 @@ def main(config_path: str):
 
             model.eval(); vlosses=[]
             with torch.no_grad():
-                for batch in tqdm(val_dl, desc=f"{name} Epoch {epoch}/{epochs} [valid]"):
+                for batch in val_dl:#tqdm(val_dl):#, desc=f"{name} Epoch {epoch}/{epochs} [valid]"):
                     vloss, _ = _forward_and_loss_val(model, batch, device)
                     vlosses.append(vloss.item())
             vmean = float(np.mean(vlosses))
@@ -176,12 +177,12 @@ def main(config_path: str):
                 best_val = vmean; patience = 0
                 ckpt_path = os.path.join(save_dir, "best.ckpt")
                 torch.save({"state_dict": model.state_dict(), "config": cfg, "model_type": name}, ckpt_path)
-                print(f"[{name}] Saved checkpoint to {ckpt_path}  (val={vmean:.6f})")
+                #print(f"[{name}] Saved checkpoint to {ckpt_path}  (val={vmean:.6f})")
             else:
                 patience += 1
-                print(f"[{name}] val={vmean:.6f} | best={best_val:.6f} | patience={patience}/{max_patience}")
+                #print(f"[{name}] val={vmean:.6f} | best={best_val:.6f} | patience={patience}/{max_patience}")
                 if patience >= max_patience:
-                    print(f"[{name}] Early stopping. Best val={best_val:.6f}")
+                    #print(f"[{name}] Early stopping. Best val={best_val:.6f}")
                     break
 
 if __name__ == "__main__":
