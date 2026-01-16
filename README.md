@@ -16,7 +16,6 @@ Evaluar el desempeño de distintos modelos de predicción de series temporales p
 - Long Short-Term Memory (LSTM)
 - DeepAR
 - Transformer
-- NHITS
 - D³VAE
 
 ## 🧾 Estructura del Proyecto
