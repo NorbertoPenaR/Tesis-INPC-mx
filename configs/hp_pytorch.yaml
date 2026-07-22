@@ -1,0 +1,55 @@
+data:
+  csv_path: data/ca56_2018a-2025_10_14.csv
+  unique_id: Inflacion
+  cutoff: "2024-10-14"
+  frequency: W-MON
+
+hp:
+  lambda: null
+
+components:
+  trend:
+    transform: diff
+    calendar: true
+    fft_top_k: 8
+  cycle:
+    transform: none
+    calendar: true
+    fft_top_k: 8
+
+experiment:
+  model: rnn
+  models: [rnn, lstm, deepar, transformer]
+  horizon: 26
+  rolling_horizons: [26, 52]
+  rolling:
+    windows: 4
+    step: 52
+  seed: 119
+
+models:
+  rnn: &recurrent
+    context_length: 104
+    architecture: {hidden_size: 32, num_layers: 1, dropout: 0.0}
+    training: &training
+      epochs: 80
+      batch_size: 32
+      learning_rate: 0.001
+      weight_decay: 0.00001
+      patience: 12
+      gradient_clip: 1.0
+      validation_fraction: 0.2
+      seed: 119
+      device: auto
+    component_overrides:
+      trend: {}
+      cycle: {}
+  lstm:
+    <<: *recurrent
+  deepar:
+    <<: *recurrent
+  transformer:
+    context_length: 104
+    architecture: {d_model: 32, num_layers: 2, nhead: 4, dim_feedforward: 64, dropout: 0.1}
+    training:
+      <<: *training

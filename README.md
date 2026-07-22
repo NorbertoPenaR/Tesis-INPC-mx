@@ -44,3 +44,26 @@ pip install -r requirements.txt
 
 # Ejecutar el flujo principal
 python src/main.py
+```
+
+## Extensión HP con modelos PyTorch propios
+
+El paquete `inpc_forecasting` agrega un flujo reproducible que descompone cada
+serie como `y = tendencia + ciclo`, entrena instancias independientes para
+ambos componentes y reconstruye el pronóstico final. Incluye implementaciones
+propias de RNN, LSTM, DeepAR y Transformer. El código histórico basado en
+NeuralForecast se conserva, pero no es una dependencia del paquete nuevo.
+
+```powershell
+python -m pip install -e ".[test]"
+python -m pytest -q
+python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --smoke
+python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling
+```
+
+La corrida `--smoke` comprueba la integración con pocas épocas y un horizonte
+reducido. No sustituye el benchmark *rolling-origin* de 6 y 12 meses; por ello,
+sus resultados no se presentan como evidencia final en la tesis.
+
+Las fuentes de la tesis se encuentran en `thesis/` y el PDF compilado en
+`output/pdf/Tesis_final_HP_PyTorch.pdf`.
