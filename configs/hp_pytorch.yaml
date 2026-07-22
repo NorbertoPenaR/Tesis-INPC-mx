@@ -1,7 +1,8 @@
 data:
   csv_path: data/ca56_2018a-2025_10_14.csv
   unique_id: Inflacion
-  cutoff: "2024-10-14"
+  # Ultimo lunes que conserva 52 observaciones reales hasta 2025-09-22.
+  cutoff: "2024-09-23"
   frequency: W-MON
 
 hp:

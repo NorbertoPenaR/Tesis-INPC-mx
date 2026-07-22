@@ -15,6 +15,7 @@ def rolling_cutoffs(
     final_cutoff: str | pd.Timestamp,
     windows: int,
     step: int,
+    required_horizon: int = 0,
 ) -> list[pd.Timestamp]:
     dates = pd.DatetimeIndex(
         data.loc[data["unique_id"] == unique_id, "ds"].pipe(pd.to_datetime).sort_values().unique()
@@ -23,6 +24,14 @@ def rolling_cutoffs(
     positions = [last_position - step * index for index in reversed(range(windows))]
     if not positions or min(positions) < 0:
         raise ValueError("No existen observaciones suficientes para las ventanas rolling solicitadas.")
+    if required_horizon < 0:
+        raise ValueError("El horizonte requerido no puede ser negativo.")
+    if max(positions) + required_horizon >= len(dates):
+        available = len(dates) - max(positions) - 1
+        raise ValueError(
+            "La ultima ventana rolling no tiene valores reales suficientes: "
+            f"requiere {required_horizon} y solo existen {available} despues del corte."
+        )
     return [pd.Timestamp(dates[position]) for position in positions]
 
 
@@ -37,6 +46,7 @@ def run_rolling_benchmark(config: dict, data: pd.DataFrame, output_dir: str | Pa
         config["data"]["cutoff"],
         int(rolling["windows"]),
         int(rolling["step"]),
+        required_horizon=max(int(value) for value in experiment["rolling_horizons"]),
     )
     predictions = []
     for horizon in experiment["rolling_horizons"]:

@@ -59,11 +59,20 @@ python -m pip install -e ".[test]"
 python -m pytest -q
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --smoke
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling
+python scripts/analyze_hp_results.py `
+  --predictions outputs/hp_pytorch/rolling_predictions.csv `
+  --data data/ca56_2018a-2025_10_14.csv `
+  --output-dir outputs/hp_pytorch
 ```
 
 La corrida `--smoke` comprueba la integración con pocas épocas y un horizonte
 reducido. No sustituye el benchmark *rolling-origin* de 6 y 12 meses; por ello,
 sus resultados no se presentan como evidencia final en la tesis.
+
+El benchmark verifica antes de entrenar que cada corte tenga todos los valores
+reales exigidos por el horizonte máximo. El script de análisis audita valores
+faltantes, infinitos y duplicados, y compara las redes contra persistencia y
+contra el pronóstico aislado de la tendencia.
 
 Las fuentes de la tesis se encuentran en `thesis/` y el PDF compilado en
 `output/pdf/Tesis_final_HP_PyTorch.pdf`.
