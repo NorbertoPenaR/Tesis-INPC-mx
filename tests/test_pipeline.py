@@ -41,11 +41,27 @@ def test_end_to_end_component_pipeline(model):
     assert len(result) == 3
     numeric = [
         "yhat_trend", "yhat_cycle", "yhat", "y_true_trend", "y_true_cycle",
+        "y_true_trend_realtime", "y_true_cycle_realtime",
         "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle",
+        "mae_trend_realtime", "mae_cycle_realtime",
     ]
     assert np.isfinite(result[numeric].to_numpy()).all()
     np.testing.assert_allclose(result["yhat"], result["yhat_trend"] + result["yhat_cycle"])
     np.testing.assert_allclose(result["y_true"], result["y_true_trend"] + result["y_true_cycle"])
+    np.testing.assert_allclose(
+        result["y_true"], result["y_true_trend_realtime"] + result["y_true_cycle_realtime"]
+    )
+
+
+def test_cycle_training_window_is_applied_before_scaling():
+    config = _config("rnn")
+    config["components"]["cycle"]["training_window"] = 20
+    pipe = ComponentForecastPipeline(config)
+    dates = pd.date_range("2020-01-06", periods=50, freq="W-MON")
+    future = pd.date_range("2020-12-21", periods=3, freq="W-MON")
+    prepared = pipe._prepare(np.arange(50, dtype=float), dates, future, False)
+    assert len(prepared.transformed) == 20
+    assert prepared.scaler.mean_ == pytest.approx(np.arange(30, 50).mean())
 
 
 def test_future_values_only_change_evaluation_labels_not_predictions():

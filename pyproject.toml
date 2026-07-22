@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+classical = ["xgboost>=2.1"]
 
 [project.scripts]
 inpc-hp-forecast = "inpc_forecasting.cli:main"

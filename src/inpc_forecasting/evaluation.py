@@ -60,7 +60,8 @@ def run_rolling_benchmark(config: dict, data: pd.DataFrame, output_dir: str | Pa
     scores = detailed[
         [
             "model", "trend_model", "cycle_model", "transformation", "horizon", "cutoff",
-            "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+            "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle",
+            "mae_trend_realtime", "mae_cycle_realtime", "mae", "rmse", "mape",
         ]
     ].drop_duplicates()
     summary = (
@@ -70,6 +71,8 @@ def run_rolling_benchmark(config: dict, data: pd.DataFrame, output_dir: str | Pa
             mae_trend_sd=("mae_trend", "std"),
             mae_cycle_mean=("mae_cycle", "mean"),
             mae_cycle_sd=("mae_cycle", "std"),
+            mae_trend_realtime_mean=("mae_trend_realtime", "mean"),
+            mae_cycle_realtime_mean=("mae_cycle_realtime", "mean"),
             mae_mean=("mae", "mean"),
             mae_sd=("mae", "std"),
             rmse_mean=("rmse", "mean"),

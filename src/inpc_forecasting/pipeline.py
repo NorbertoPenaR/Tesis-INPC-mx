@@ -19,7 +19,9 @@ from .transforms import Standardizer, TrendTransform
 RESULT_COLUMNS = [
     "ds", "unique_id", "cutoff", "horizon", "step", "model", "trend_model", "cycle_model",
     "transformation", "yhat_trend", "yhat_cycle", "yhat", "y_true_trend", "y_true_cycle", "y_true",
-    "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+    "y_true_trend_realtime", "y_true_cycle_realtime",
+    "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle",
+    "mae_trend_realtime", "mae_cycle_realtime", "mae", "rmse", "mape",
     "execution_time", "config_hash",
 ]
 
@@ -61,6 +63,11 @@ class ComponentForecastPipeline:
         is_trend: bool,
     ) -> _PreparedComponent:
         component_cfg = self.config["components"]["trend" if is_trend else "cycle"]
+        training_window = component_cfg.get("training_window")
+        if training_window:
+            window = int(training_window)
+            values = np.asarray(values)[-window:]
+            dates = dates[-window:]
         transform = TrendTransform(component_cfg.get("transform", "diff")) if is_trend else None
         transformed = transform.fit_transform(values) if transform else np.asarray(values, dtype=float)
         lost = len(values) - len(transformed)
@@ -135,6 +142,8 @@ class ComponentForecastPipeline:
         valid = np.isfinite(actual)
         actual_trend = np.full(horizon, np.nan, dtype=float)
         actual_cycle = np.full(horizon, np.nan, dtype=float)
+        realtime_trend = np.full(horizon, np.nan, dtype=float)
+        realtime_cycle = np.full(horizon, np.nan, dtype=float)
         if valid.all():
             # Etiquetas retrospectivas para evaluar componentes. Las observaciones futuras
             # se usan solo despues de pronosticar y nunca alimentan el ajuste de los modelos.
@@ -142,6 +151,13 @@ class ComponentForecastPipeline:
             evaluation_trend, evaluation_cycle = decomposer.fit_transform(evaluation_values)
             actual_trend = evaluation_trend[-horizon:]
             actual_cycle = evaluation_cycle[-horizon:]
+            # Estimacion disponible en tiempo real: para cada fecha futura se
+            # toma solamente el extremo del HP calculado con datos hasta ella.
+            train_values = train["y"].to_numpy(dtype=float)
+            for step in range(horizon):
+                rt_trend, rt_cycle = decomposer.fit_transform(np.r_[train_values, actual[: step + 1]])
+                realtime_trend[step] = rt_trend[-1]
+                realtime_cycle[step] = rt_cycle[-1]
         component_valid = np.isfinite(actual_trend) & np.isfinite(actual_cycle)
         mae_trend = (
             float(mean_absolute_error(actual_trend[component_valid], trend_hat[component_valid]))
@@ -162,6 +178,15 @@ class ComponentForecastPipeline:
             float(mean_squared_error(actual_cycle[component_valid], cycle_hat[component_valid]) ** 0.5)
             if component_valid.any()
             else np.nan
+        )
+        realtime_valid = np.isfinite(realtime_trend) & np.isfinite(realtime_cycle)
+        mae_trend_realtime = (
+            float(mean_absolute_error(realtime_trend[realtime_valid], trend_hat[realtime_valid]))
+            if realtime_valid.any() else np.nan
+        )
+        mae_cycle_realtime = (
+            float(mean_absolute_error(realtime_cycle[realtime_valid], cycle_hat[realtime_valid]))
+            if realtime_valid.any() else np.nan
         )
         mae = float(mean_absolute_error(actual[valid], yhat[valid])) if valid.any() else np.nan
         rmse = float(mean_squared_error(actual[valid], yhat[valid]) ** 0.5) if valid.any() else np.nan
@@ -185,10 +210,14 @@ class ComponentForecastPipeline:
                 "y_true_trend": actual_trend,
                 "y_true_cycle": actual_cycle,
                 "y_true": actual,
+                "y_true_trend_realtime": realtime_trend,
+                "y_true_cycle_realtime": realtime_cycle,
                 "mae_trend": mae_trend,
                 "rmse_trend": rmse_trend,
                 "mae_cycle": mae_cycle,
                 "rmse_cycle": rmse_cycle,
+                "mae_trend_realtime": mae_trend_realtime,
+                "mae_cycle_realtime": mae_cycle_realtime,
                 "mae": mae,
                 "rmse": rmse,
                 "mape": mape,

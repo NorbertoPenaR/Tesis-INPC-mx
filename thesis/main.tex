@@ -2078,7 +2078,7 @@ Esta flexibilidad permite adaptar el sistema tanto a contextos macroeconómicos 
 \subsection{Preprocesamiento y transformaciones}
 Sea $y_t$ la serie de interés (inflación). En el experimento original, para estabilizar la dinámica y favorecer el aprendizaje en modelos neuronales se aplica \textbf{diferencia de orden 1} sobre la tasa de cambio (\(\Delta y_t\)), seguida de estandarización y reescalado. Todas las transformaciones se realizan con \textbf{anti-fuga}: sus parámetros se calculan exclusivamente con datos previos a cada ventana de validación.
 
-El pipeline extendido descompone primero $y_t=\tau_t+c_t$. Las transformaciones \texttt{diff}, \texttt{diff\_logp1}, \texttt{pct}, \texttt{logp1}, \texttt{none} y \texttt{diff2} se permiten únicamente sobre $\tau_t$ y se invierten antes de reconstruir el pronóstico. El ciclo $c_t$ no se diferencia ni se transforma mediante logaritmos, debido a que puede tomar valores negativos; sólo se estandariza con la media y desviación del entrenamiento. Las variables de calendario y las componentes FFT se calculan por separado para cada componente y a partir de su respectiva historia.
+El pipeline extendido descompone primero $y_t=\tau_t+c_t$. Las transformaciones \texttt{diff}, \texttt{diff\_logp1}, \texttt{pct}, \texttt{logp1}, \texttt{none} y \texttt{diff2} se permiten únicamente sobre $\tau_t$ y se invierten antes de reconstruir el pronóstico. El ciclo $c_t$ no se diferencia ni se transforma mediante logaritmos, debido a que puede tomar valores negativos; sólo se estandariza con la media y desviación del entrenamiento. Aunque el filtro HP lo centra prácticamente en cero, esto no vuelve constante su escala histórica. En la serie analizada, los episodios de 1994--1996 elevan la desviación estándar del ciclo completo a 5.049 puntos, mientras que en los diez años anteriores al último corte es de 1.389. Por ello, la configuración revisada estima la normalización y entrena el ciclo con una ventana móvil de 520 semanas. Esta longitud se trata como hiperparámetro y siempre se recorta antes de calcular la media, la desviación y las componentes FFT. Las variables de calendario y las componentes FFT se calculan por separado para cada componente y a partir de su respectiva historia.
 
 \subsection{Ingeniería de variables}
 Se estudian tres escenarios de covariables:
@@ -2091,7 +2091,7 @@ Se estudian tres escenarios de covariables:
 \subsection{Modelos}
 Se evaluaron: \textbf{Holt-Winters}, \textbf{XGBoost}, \textbf{RNN}, \textbf{LSTM}, \textbf{DeepAR} y \textbf{Transformer} (Vanilla). Cada modelo respeta la misma política de transformaciones y covariables por escenario. Para RNN, LSTM, DeepAR y Transformer se agregó una implementación propia en PyTorch con una interfaz común. RNN y LSTM emplean un codificador recurrente y una cabeza directa multihorizonte; DeepAR utiliza una LSTM autorregresiva con verosimilitud gaussiana; Transformer utiliza atención causal, codificación posicional y una cabeza multihorizonte. NeuralForecast se conserva únicamente para reproducir los experimentos históricos.
 
-En el pipeline HP, cada arquitectura se instancia dos veces. Ambos modelos comparten el horizonte y el protocolo de validación, pero ajustan parámetros y escalas independientes para $\tau_t$ y $c_t$. El resultado evaluado no es cada componente de forma aislada, sino la serie reconstruida $\widehat{y}_t=\widehat{\tau}_t+\widehat{c}_t$.
+En el pipeline HP, cada arquitectura se instancia dos veces. Ambos modelos comparten el horizonte y el protocolo de validación, pero ajustan parámetros y escalas independientes para $\tau_t$ y $c_t$. Se reportan el MAE de tendencia, el MAE de ciclo y el MAE de la serie reconstruida $\widehat{y}_t=\widehat{\tau}_t+\widehat{c}_t$. XGBoost se incorpora como pronosticador recursivo del ciclo a partir de sus rezagos y covariables conocidas; Holt--Winters se conserva como referencia clásica de suavizado.
 
 \subsection{Protocolos de validación}
 Se emplean dos esquemas complementarios:
@@ -2101,15 +2101,17 @@ Se emplean dos esquemas complementarios:
 \end{itemize}
 La \textbf{métrica principal} es el \textbf{MAE}, por su interpretabilidad en niveles y su menor sensibilidad a valores atípicos en este caso de estudio.
 
+El filtro HP presenta revisión de extremo: al incorporar nuevas observaciones también cambia la descomposición asignada al final del entrenamiento. Para no confundir esa revisión con el error del pronosticador, el MAE de los componentes se calcula de dos formas. La etiqueta \textit{retrospectiva} descompone conjuntamente el entrenamiento y todo el horizonte observado; la etiqueta \textit{en tiempo real} vuelve a estimar HP en cada fecha y toma únicamente el extremo disponible entonces. En ambos casos, los valores posteriores al corte se utilizan sólo para evaluar y nunca para construir entradas, escalas o parámetros del modelo. El MAE de la inflación reconstruida permanece como criterio principal porque se calcula directamente contra el valor observado y no depende de una etiqueta latente revisable.
+
 \subsection{Optimización de hiperparámetros}
 Para cada modelo y escenario de variables se utiliza \textbf{Optimización Bayesiana} con función objetivo:
 \[
 \theta^* \;=\; \arg\min_{\theta} \; \text{MAE}_{\text{val}}(\theta),
 \]
-donde \(\theta\) parametriza la arquitectura (p.~ej., número de capas/neuronas en RNN/LSTM; profundidad, \textit{learning rate} y rondas en XGBoost; cabezas/anchos en Transformer; estacionalidad en Holt-Winters). La BO balancea exploración/explotación mediante una función de adquisición (p.~ej., \textit{Expected Improvement}) y permite encontrar configuraciones competitivas con pocas evaluaciones.
+donde \(\theta\) parametriza la arquitectura (p.~ej., número de capas/neuronas en RNN/LSTM; profundidad, \textit{learning rate} y rondas en XGBoost; cabezas/anchos en Transformer; estacionalidad en Holt-Winters), además de la longitud de historia empleada para el ciclo. La BO balancea exploración/explotación mediante una función de adquisición (p.~ej., \textit{Expected Improvement}) y permite encontrar configuraciones competitivas con pocas evaluaciones. En la extensión HP, la búsqueda se ejecuta una sola vez dentro del primer corte externo mediante orígenes temporales internos. Los parámetros resultantes se congelan para los cortes posteriores. Así se imita una decisión que habría podido tomarse en tiempo real y se evita optimizar repetidamente sobre cada conjunto de evaluación.
 
 \subsection{Protocolo de pronóstico final}
-Una vez seleccionada \(\theta^*\) en cada ventana, el modelo se \textbf{re-entrena con toda la información disponible} previa al horizonte y se generan las predicciones. En el esquema \textit{single split}, para mantener consistencia con la validación, el pronóstico se produce desplazando \(-m\) meses según la ventana de validación definida por el usuario.
+Una vez seleccionada \(\theta^*\) con la validación interna del primer corte, el modelo se \textbf{re-entrena con toda la información disponible} previa a cada horizonte y se generan las predicciones sin modificar esos hiperparámetros. En el esquema \textit{single split}, para mantener consistencia con la validación, el pronóstico se produce desplazando \(-m\) meses según la ventana de validación definida por el usuario.
 
 \subsection{Controles de sobreajuste y linealidad}
 Además de la validación cruzada, se implementa un chequeo de \textbf{linealidad de pronósticos}: para una trayectoria \(\hat{y}_{t}\) (horizonte), se ajusta por mínimos cuadrados la recta \(m t + b\) y se calcula el \(\text{RMSE}(\hat{y}_t, m t + b)\). Si el RMSE cae por debajo de un umbral, la predicción se considera esencialmente lineal y se descarta como no informativa respecto a una regresión o promedio históricos. Este control evita aceptar configuraciones que \textit{aprenden} soluciones triviales.
@@ -2275,25 +2277,35 @@ Los resultados confirman que la complejidad de una arquitectura no garantiza por
 
 El mejor comportamiento de Transformer a doce meses es compatible con su capacidad para relacionar posiciones distantes mediante atención, mientras que la variabilidad de RNN y LSTM coincide con sus limitaciones para conservar dependencias largas, discutidas por \cite{sherstinsky2020fundamentals}. DeepAR aporta una formulación probabilística útil, pero su ventaja teórica no implica automáticamente una mejora en MAE cuando se dispone de una sola serie agregada; el modelo fue concebido para aprovechar conjuntos de series relacionadas \cite{salinas2020deepar}. Por otra parte, el desempeño de D\textsuperscript{3}VAE sugiere que representar incertidumbre y regularizar el espacio latente puede ser valioso, aunque esta conclusión permanece limitada a los cortes y horizontes evaluados.
 
-\subsection{Extensión HP y resultados pendientes}
+\subsection{Extensión HP: diagnóstico inicial por componente}
 
-La implementación descrita en esta versión deja preparado el experimento que pronostica $\tau_t$ y $c_t$ de manera independiente con RNN, LSTM, DeepAR y Transformer propios. Sin embargo, una corrida mínima de verificación no es metodológicamente comparable con el benchmark completo. Por esta razón, no se sustituyen las métricas anteriores ni se afirma todavía que la descomposición HP reduzca el error. La hipótesis deberá evaluarse mediante todas las ventanas rolling-origin de seis y doce meses.
+Se ejecutaron cuatro cortes \textit{rolling-origin} con semilla 119 y horizontes de 26 y 52 semanas. Esta primera comparación emplea configuraciones fijas y, por tanto, funciona como diagnóstico previo a la optimización bayesiana anidada. En la tendencia, \texttt{none} produjo errores muy superiores a \texttt{logp1}; por ello, la tabla reporta esta última transformación. En el ciclo, la ventana indicada como ``completa'' utiliza la historia desde 1989, mientras que la ventana reciente emplea 520 semanas.
 
 \begin{table}[H]
 \centering
-\caption{Matriz de resultados prevista para el benchmark HP. Los valores permanecen pendientes hasta ejecutar el protocolo completo.}
+\caption{MAE inicial por componente en cuatro cortes temporales. Configuraciones aún no optimizadas mediante BO anidada.}
 \label{tab:hp_pending}
+\small
 \begin{tabular}{lcccc}
 \toprule
-Modelo & MAE 6 meses & sd 6 meses & MAE 12 meses & sd 12 meses \\
+Modelo & Tendencia 26 & Ciclo 26 & Tendencia 52 & Ciclo 52 \\
 \midrule
-RNN         & Pendiente & Pendiente & Pendiente & Pendiente \\
-LSTM        & Pendiente & Pendiente & Pendiente & Pendiente \\
-DeepAR      & Pendiente & Pendiente & Pendiente & Pendiente \\
-Transformer & Pendiente & Pendiente & Pendiente & Pendiente \\
+RNN (completa)         & 1.949 & 1.575 & 2.664 & 1.733 \\
+LSTM (completa)        & 1.897 & 0.899 & 1.591 & 0.820 \\
+DeepAR (completa)      & 0.964 & 2.124 & 0.711 & 1.849 \\
+Transformer (completa) & 1.121 & 3.486 & 2.862 & 3.046 \\
+LSTM (ciclo reciente)  & --    & 0.670 & --    & 0.847 \\
+XGBoost (ciclo reciente)& --   & 0.442 & --    & 0.804 \\
+Holt--Winters (ciclo reciente)& -- & 0.719 & -- & 1.129 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+El resultado más claro es que la estacionariedad del ciclo no garantiza que cualquier arquitectura lo pronostique bien. XGBoost obtiene el menor MAE preliminar a 26 semanas y queda prácticamente empatado con LSTM a 52 semanas. Holt--Winters resulta competitivo a seis meses, pero su trayectoria converge casi a un nivel constante y pierde capacidad a doce meses. Limitar LSTM al régimen reciente reduce su MAE de 0.899 a 0.670 en 26 semanas, aunque a 52 semanas cambia de 0.820 a 0.847. Esto muestra que la longitud de historia debe seleccionarse por horizonte y no fijarse únicamente por intuición.
+
+Transformer presenta una amplitud pronosticada excesiva: su desviación en las trayectorias supera ampliamente la observada en el ciclo de evaluación. La causa no es una ausencia de centrado, pues la implementación ya resta la media y divide entre la desviación del entrenamiento. El problema combina el cambio de escala histórica, una cabeza multihorizonte sin restricción de amplitud y parámetros de arquitectura elegidos todavía de forma fija. Por ello, la optimización bayesiana se plantea por componente y horizonte, usando validación interna en el primer corte y congelando después los parámetros.
+
+Estos resultados todavía no demuestran una mejora en el pronóstico reconstruido. La combinación inicial de DeepAR para tendencia y LSTM para ciclo obtuvo MAE de 1.608 y 1.308 a 26 y 52 semanas, respectivamente, mientras que la persistencia directa alcanzó 0.657 y 1.167. En consecuencia, la hipótesis HP no se acepta con esta configuración preliminar; la comparación final requiere la búsqueda anidada y conservará la persistencia como referencia obligatoria.
 
 \subsection{Hallazgos principales}
 
@@ -2314,7 +2326,7 @@ líneas base competitivas, su desempeño y estabilidad dependen fuertemente del 
 evaluación. En particular, la validación cruzada temporal fue esencial para obtener conclusiones
 robustas y evitar selecciones guiadas por un único periodo histórico.
 
-En relación con los objetivos planteados, se construyó el conjunto semanal del INPC, se estableció un protocolo común de comparación, se evaluaron transformaciones y variables temporales, y se integraron implementaciones propias de RNN, LSTM, DeepAR y Transformer. También quedó implementada la descomposición HP sin fuga temporal y el entrenamiento independiente de tendencia y ciclo. No obstante, la hipótesis específica sobre una reducción del MAE mediante esta descomposición permanece abierta: aceptarla o rechazarla requiere ejecutar el benchmark HP completo y no puede inferirse de las pruebas mínimas de funcionamiento.
+En relación con los objetivos planteados, se construyó el conjunto semanal del INPC, se estableció un protocolo común de comparación, se evaluaron transformaciones y variables temporales, y se integraron implementaciones propias de RNN, LSTM, DeepAR y Transformer. También quedó implementada la descomposición HP sin fuga temporal y el entrenamiento independiente de tendencia y ciclo. El diagnóstico inicial de cuatro cortes no respalda todavía una reducción del MAE reconstruido frente a persistencia, aunque sí identifica modelos distintos para cada componente: DeepAR resulta competitivo en la tendencia, mientras que XGBoost y LSTM presentan los menores errores en el ciclo. La decisión definitiva queda condicionada a la optimización bayesiana anidada, con parámetros congelados fuera del primer corte.
 
 A lo largo de la experimentación se observó que \textbf{la parsimonia} juega un papel central.
 Reducir espacios paramétricos, limitar la complejidad de arquitecturas y controlar soluciones

@@ -34,9 +34,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--rolling", action="store_true", help="Ejecuta todas las ventanas y horizontes configurados")
-    parser.add_argument("--model", choices=["rnn", "lstm", "deepar", "transformer"])
-    parser.add_argument("--trend-model", choices=["rnn", "lstm", "deepar", "transformer"])
-    parser.add_argument("--cycle-model", choices=["rnn", "lstm", "deepar", "transformer"])
+    model_choices = ["rnn", "lstm", "deepar", "transformer", "xgboost", "holt_winters"]
+    parser.add_argument("--model", choices=model_choices)
+    parser.add_argument("--trend-model", choices=model_choices)
+    parser.add_argument("--cycle-model", choices=model_choices)
     parser.add_argument("--trend-transform", choices=SUPPORTED_TRANSFORMS)
     parser.add_argument("--output-dir", default="outputs/hp_pytorch")
     return parser.parse_args()

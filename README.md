@@ -55,7 +55,7 @@ propias de RNN, LSTM, DeepAR y Transformer. El código histórico basado en
 NeuralForecast se conserva, pero no es una dependencia del paquete nuevo.
 
 ```powershell
-python -m pip install -e ".[test]"
+python -m pip install -e ".[test,classical]"
 python -m pytest -q
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --smoke
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling
@@ -85,6 +85,28 @@ pero nunca entran al entrenamiento. La CLI acepta `--trend-model` y
 `--cycle-model` para combinar arquitecturas distintas; los scripts
 `combine_component_forecasts.py` y `evaluate_trend_baselines.py` permiten
 comparar combinaciones y tendencias HP analíticas sin reentrenar el ciclo.
+
+El resultado incluye también `y_true_trend_realtime`,
+`y_true_cycle_realtime`, `mae_trend_realtime` y `mae_cycle_realtime`. Estas
+columnas vuelven a calcular el extremo del filtro en cada fecha usando sólo la
+información disponible entonces. La doble medición separa el error del modelo
+de la revisión de extremo propia de HP.
+
+Para el ciclo, `training_window: 520` limita el ajuste y la normalización a los
+últimos diez años. La serie completa está centrada casi exactamente en cero,
+pero su desviación está dominada por 1994--1996: 5.049 puntos en toda la
+historia frente a 1.389 en los diez años anteriores al último corte. El comando
+siguiente reproduce el diagnóstico y compara XGBoost y Holt-Winters:
+
+```powershell
+python scripts/diagnose_cycle.py --output-dir outputs/hp_cycle_diagnostics
+```
+
+La búsqueda bayesiana debe realizarse dentro del primer corte externo mediante
+orígenes temporales internos. Una vez elegidos los hiperparámetros por modelo,
+componente y horizonte, se congelan para todos los cortes externos posteriores.
+Optimizar directamente sobre el resultado del primer corte y luego incluirlo en
+el promedio produciría una estimación optimista; por eso no se adopta ese atajo.
 
 Las fuentes de la tesis se encuentran en `thesis/` y el PDF compilado en
 `output/pdf/Tesis_final_HP_PyTorch.pdf`.
