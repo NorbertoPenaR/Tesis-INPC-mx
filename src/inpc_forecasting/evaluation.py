@@ -57,10 +57,19 @@ def run_rolling_benchmark(config: dict, data: pd.DataFrame, output_dir: str | Pa
                 run_config["experiment"]["horizon"] = int(horizon)
                 predictions.append(ComponentForecastPipeline(run_config).fit_predict(data, cutoff=cutoff))
     detailed = pd.concat(predictions, ignore_index=True)
-    scores = detailed[["model", "horizon", "cutoff", "mae", "rmse", "mape"]].drop_duplicates()
+    scores = detailed[
+        [
+            "model", "trend_model", "cycle_model", "transformation", "horizon", "cutoff",
+            "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+        ]
+    ].drop_duplicates()
     summary = (
-        scores.groupby(["model", "horizon"], as_index=False)
+        scores.groupby(["model", "trend_model", "cycle_model", "transformation", "horizon"], as_index=False)
         .agg(
+            mae_trend_mean=("mae_trend", "mean"),
+            mae_trend_sd=("mae_trend", "std"),
+            mae_cycle_mean=("mae_cycle", "mean"),
+            mae_cycle_sd=("mae_cycle", "std"),
             mae_mean=("mae", "mean"),
             mae_sd=("mae", "std"),
             rmse_mean=("rmse", "mean"),

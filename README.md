@@ -59,6 +59,10 @@ python -m pip install -e ".[test]"
 python -m pytest -q
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --smoke
 python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling
+python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling `
+  --trend-transform none --output-dir outputs/hp_none
+python -m inpc_forecasting.cli --config configs/hp_pytorch.yaml --rolling `
+  --trend-transform logp1 --output-dir outputs/hp_logp1
 python scripts/analyze_hp_results.py `
   --predictions outputs/hp_pytorch/rolling_predictions.csv `
   --data data/ca56_2018a-2025_10_14.csv `
@@ -73,6 +77,14 @@ El benchmark verifica antes de entrenar que cada corte tenga todos los valores
 reales exigidos por el horizonte máximo. El script de análisis audita valores
 faltantes, infinitos y duplicados, y compara las redes contra persistencia y
 contra el pronóstico aislado de la tendencia.
+
+Las columnas `y_true_trend` y `y_true_cycle` son etiquetas retrospectivas: se
+calculan con HP sobre entrenamiento más el horizonte observado únicamente
+después de producir el pronóstico. Sirven para medir `mae_trend` y `mae_cycle`,
+pero nunca entran al entrenamiento. La CLI acepta `--trend-model` y
+`--cycle-model` para combinar arquitecturas distintas; los scripts
+`combine_component_forecasts.py` y `evaluate_trend_baselines.py` permiten
+comparar combinaciones y tendencias HP analíticas sin reentrenar el ciclo.
 
 Las fuentes de la tesis se encuentran en `thesis/` y el PDF compilado en
 `output/pdf/Tesis_final_HP_PyTorch.pdf`.

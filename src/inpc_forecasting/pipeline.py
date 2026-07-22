@@ -17,8 +17,10 @@ from .transforms import Standardizer, TrendTransform
 
 
 RESULT_COLUMNS = [
-    "ds", "unique_id", "cutoff", "horizon", "step", "model", "transformation", "yhat_trend",
-    "yhat_cycle", "yhat", "y_true", "mae", "rmse", "mape", "execution_time", "config_hash",
+    "ds", "unique_id", "cutoff", "horizon", "step", "model", "trend_model", "cycle_model",
+    "transformation", "yhat_trend", "yhat_cycle", "yhat", "y_true_trend", "y_true_cycle", "y_true",
+    "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+    "execution_time", "config_hash",
 ]
 
 
@@ -118,13 +120,49 @@ class ComponentForecastPipeline:
         trend, cycle = decomposer.fit_transform(train["y"].to_numpy())
         trend_data = self._prepare(trend, dates, forecast_dates, True)
         cycle_data = self._prepare(cycle, dates, forecast_dates, False)
-        model_name = self.config["experiment"]["model"]
-        model_cfg = self.config["models"][model_name.lower()]
-        trend_hat = self._forecast_component(model_name, trend_data, horizon, model_cfg, "trend")
-        cycle_hat = self._forecast_component(model_name, cycle_data, horizon, model_cfg, "cycle")
+        experiment = self.config["experiment"]
+        default_model = experiment["model"]
+        trend_model = experiment.get("trend_model", default_model)
+        cycle_model = experiment.get("cycle_model", default_model)
+        trend_hat = self._forecast_component(
+            trend_model, trend_data, horizon, self.config["models"][trend_model.lower()], "trend"
+        )
+        cycle_hat = self._forecast_component(
+            cycle_model, cycle_data, horizon, self.config["models"][cycle_model.lower()], "cycle"
+        )
         yhat = trend_hat + cycle_hat
         actual = frame.set_index("ds")["y"].reindex(forecast_dates).to_numpy(dtype=float)
         valid = np.isfinite(actual)
+        actual_trend = np.full(horizon, np.nan, dtype=float)
+        actual_cycle = np.full(horizon, np.nan, dtype=float)
+        if valid.all():
+            # Etiquetas retrospectivas para evaluar componentes. Las observaciones futuras
+            # se usan solo despues de pronosticar y nunca alimentan el ajuste de los modelos.
+            evaluation_values = np.r_[train["y"].to_numpy(dtype=float), actual]
+            evaluation_trend, evaluation_cycle = decomposer.fit_transform(evaluation_values)
+            actual_trend = evaluation_trend[-horizon:]
+            actual_cycle = evaluation_cycle[-horizon:]
+        component_valid = np.isfinite(actual_trend) & np.isfinite(actual_cycle)
+        mae_trend = (
+            float(mean_absolute_error(actual_trend[component_valid], trend_hat[component_valid]))
+            if component_valid.any()
+            else np.nan
+        )
+        rmse_trend = (
+            float(mean_squared_error(actual_trend[component_valid], trend_hat[component_valid]) ** 0.5)
+            if component_valid.any()
+            else np.nan
+        )
+        mae_cycle = (
+            float(mean_absolute_error(actual_cycle[component_valid], cycle_hat[component_valid]))
+            if component_valid.any()
+            else np.nan
+        )
+        rmse_cycle = (
+            float(mean_squared_error(actual_cycle[component_valid], cycle_hat[component_valid]) ** 0.5)
+            if component_valid.any()
+            else np.nan
+        )
         mae = float(mean_absolute_error(actual[valid], yhat[valid])) if valid.any() else np.nan
         rmse = float(mean_squared_error(actual[valid], yhat[valid]) ** 0.5) if valid.any() else np.nan
         nonzero = valid & ~np.isclose(actual, 0.0)
@@ -137,12 +175,20 @@ class ComponentForecastPipeline:
                 "cutoff": cutoff_ts,
                 "horizon": horizon,
                 "step": np.arange(1, horizon + 1),
-                "model": model_name,
+                "model": trend_model if trend_model == cycle_model else f"{trend_model}+{cycle_model}",
+                "trend_model": trend_model,
+                "cycle_model": cycle_model,
                 "transformation": self.config["components"]["trend"]["transform"],
                 "yhat_trend": trend_hat,
                 "yhat_cycle": cycle_hat,
                 "yhat": yhat,
+                "y_true_trend": actual_trend,
+                "y_true_cycle": actual_cycle,
                 "y_true": actual,
+                "mae_trend": mae_trend,
+                "rmse_trend": rmse_trend,
+                "mae_cycle": mae_cycle,
+                "rmse_cycle": rmse_cycle,
                 "mae": mae,
                 "rmse": rmse,
                 "mape": mape,

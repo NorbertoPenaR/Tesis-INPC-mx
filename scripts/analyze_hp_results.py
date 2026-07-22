@@ -12,6 +12,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from inpc_forecasting.data import load_inpc_csv  # noqa: E402
+from inpc_forecasting.decomposition import HPDecomposer  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +34,9 @@ def analyze(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     predictions = pd.read_csv(predictions_path, parse_dates=["ds", "cutoff"])
     numeric = [
-        "yhat_trend", "yhat_cycle", "yhat", "y_true", "mae", "rmse", "mape", "execution_time",
+        "yhat_trend", "yhat_cycle", "yhat", "y_true_trend", "y_true_cycle", "y_true",
+        "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+        "execution_time",
     ]
     if predictions[numeric].isna().any().any() or not np.isfinite(predictions[numeric].to_numpy()).all():
         raise ValueError("El benchmark contiene valores faltantes o no finitos.")
@@ -44,11 +47,19 @@ def analyze(
     data = load_inpc_csv(data_path, frequency)
     series = data[data["unique_id"] == unique_id].set_index("ds")["y"]
     scores = predictions[
-        ["model", "horizon", "cutoff", "mae", "rmse", "mape", "execution_time"]
+        [
+            "model", "trend_model", "cycle_model", "transformation", "horizon", "cutoff",
+            "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse", "mape",
+            "execution_time",
+        ]
     ].drop_duplicates()
     summary = (
-        scores.groupby(["horizon", "model"])
+        scores.groupby(["horizon", "transformation", "model"])
         .agg(
+            mae_trend_mean=("mae_trend", "mean"),
+            mae_trend_sd=("mae_trend", "std"),
+            mae_cycle_mean=("mae_cycle", "mean"),
+            mae_cycle_sd=("mae_cycle", "std"),
             mae_mean=("mae", "mean"),
             mae_sd=("mae", "std"),
             rmse_mean=("rmse", "mean"),
@@ -61,9 +72,12 @@ def analyze(
 
     baseline_rows = []
     for (cutoff, horizon), group in predictions.groupby(["cutoff", "horizon"]):
-        actual = group[["ds", "y_true"]].drop_duplicates().sort_values("ds")
+        actual = group[["ds", "y_true", "y_true_trend", "y_true_cycle"]].drop_duplicates().sort_values("ds")
         last_value = float(series.loc[cutoff])
         error = actual["y_true"].to_numpy() - last_value
+        training_values = series.loc[:cutoff].to_numpy(dtype=float)
+        training_trend, _ = HPDecomposer(frequency).fit_transform(training_values)
+        trend_persistence_error = actual["y_true_trend"].to_numpy() - training_trend[-1]
         baseline_rows.append(
             {
                 "cutoff": cutoff,
@@ -71,27 +85,22 @@ def analyze(
                 "persistence_mae": np.abs(error).mean(),
                 "persistence_rmse": np.sqrt(np.mean(error**2)),
                 "persistence_mape": np.mean(np.abs(error / actual["y_true"].to_numpy())) * 100.0,
+                "trend_persistence_mae": np.abs(trend_persistence_error).mean(),
+                "zero_cycle_mae": np.abs(actual["y_true_cycle"].to_numpy()).mean(),
             }
         )
     baselines = pd.DataFrame(baseline_rows)
     comparison = scores.merge(baselines, on=["cutoff", "horizon"])
     comparison["delta_vs_persistence"] = comparison["mae"] - comparison["persistence_mae"]
+    comparison["delta_trend_vs_persistence"] = comparison["mae_trend"] - comparison["trend_persistence_mae"]
+    comparison["delta_cycle_vs_zero"] = comparison["mae_cycle"] - comparison["zero_cycle_mae"]
 
-    point_errors = predictions.assign(
-        abs_full=lambda frame: np.abs(frame["y_true"] - frame["yhat"]),
-        abs_trend=lambda frame: np.abs(frame["y_true"] - frame["yhat_trend"]),
-    )
-    components = (
-        point_errors.groupby(["horizon", "model", "cutoff"])
-        .agg(
-            full_mae=("abs_full", "mean"),
-            trend_only_mae=("abs_trend", "mean"),
-            cycle_abs_mean=("yhat_cycle", lambda values: np.abs(values).mean()),
-            cycle_mean=("yhat_cycle", "mean"),
-        )
-        .reset_index()
-    )
-    components["cycle_delta"] = components["full_mae"] - components["trend_only_mae"]
+    components = scores[
+        [
+            "horizon", "transformation", "model", "trend_model", "cycle_model", "cutoff",
+            "mae_trend", "rmse_trend", "mae_cycle", "rmse_cycle", "mae", "rmse",
+        ]
+    ].copy()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output_dir / "audited_summary.csv", index=False)
@@ -110,7 +119,7 @@ def main() -> None:
         args.output_dir,
     )
     versus = (
-        comparison.groupby(["horizon", "model"])
+        comparison.groupby(["horizon", "transformation", "model"])
         .agg(
             model_mae=("mae", "mean"),
             persistence_mae=("persistence_mae", "mean"),
@@ -121,19 +130,34 @@ def main() -> None:
         .sort_values(["horizon", "model_mae"])
     )
     component_summary = (
-        components.groupby(["horizon", "model"])
+        components.groupby(["horizon", "transformation", "model"])
         .agg(
-            full_mae=("full_mae", "mean"),
-            trend_only_mae=("trend_only_mae", "mean"),
-            cycle_delta=("cycle_delta", "mean"),
-            cycle_abs_mean=("cycle_abs_mean", "mean"),
+            mae_trend=("mae_trend", "mean"),
+            rmse_trend=("rmse_trend", "mean"),
+            mae_cycle=("mae_cycle", "mean"),
+            rmse_cycle=("rmse_cycle", "mean"),
+            mae_total=("mae", "mean"),
         )
         .reset_index()
-        .sort_values(["horizon", "full_mae"])
+        .sort_values(["horizon", "mae_total"])
+    )
+    component_baselines = (
+        comparison.groupby(["horizon", "transformation", "model"])
+        .agg(
+            mae_trend=("mae_trend", "mean"),
+            trend_persistence=("trend_persistence_mae", "mean"),
+            trend_delta=("delta_trend_vs_persistence", "mean"),
+            mae_cycle=("mae_cycle", "mean"),
+            zero_cycle=("zero_cycle_mae", "mean"),
+            cycle_delta=("delta_cycle_vs_zero", "mean"),
+        )
+        .reset_index()
+        .sort_values(["horizon", "mae_trend"])
     )
     print("\nResumen por modelo\n", summary.round(4).to_string(index=False))
     print("\nComparacion contra persistencia\n", versus.round(4).to_string(index=False))
-    print("\nEfecto del pronostico ciclico\n", component_summary.round(4).to_string(index=False))
+    print("\nMetricas retrospectivas por componente\n", component_summary.round(4).to_string(index=False))
+    print("\nComponentes contra lineas base\n", component_baselines.round(4).to_string(index=False))
 
 
 if __name__ == "__main__":

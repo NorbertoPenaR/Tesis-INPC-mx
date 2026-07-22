@@ -40,3 +40,19 @@ def test_transformer_mask_blocks_future_positions():
     mask = TransformerForecast.causal_mask(4)
     assert torch.isneginf(mask[0, 1:]).all()
     assert torch.equal(torch.diag(mask), torch.zeros(4))
+
+
+@pytest.mark.parametrize("name", ["rnn", "lstm", "deepar", "transformer"])
+def test_model_initialization_is_reproducible(name):
+    architecture = {"hidden_size": 8, "num_layers": 1, "dropout": 0.0}
+    if name == "transformer":
+        architecture = {"d_model": 8, "num_layers": 1, "nhead": 2, "dim_feedforward": 16, "dropout": 0.0}
+    config = {"architecture": architecture, "training": {"seed": 119, "device": "cpu"}}
+
+    torch.manual_seed(999)
+    first = create_model(name, input_size=3, exog_size=2, horizon=3, config=config)
+    torch.manual_seed(1234)
+    second = create_model(name, input_size=3, exog_size=2, horizon=3, config=config)
+
+    for first_parameter, second_parameter in zip(first.parameters(), second.parameters()):
+        torch.testing.assert_close(first_parameter, second_parameter)

@@ -10,6 +10,7 @@ import yaml
 from .data import load_inpc_csv
 from .evaluation import run_rolling_benchmark
 from .pipeline import ComponentForecastPipeline
+from .transforms import SUPPORTED_TRANSFORMS
 
 
 def load_config(path: str | Path) -> dict:
@@ -34,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--rolling", action="store_true", help="Ejecuta todas las ventanas y horizontes configurados")
     parser.add_argument("--model", choices=["rnn", "lstm", "deepar", "transformer"])
+    parser.add_argument("--trend-model", choices=["rnn", "lstm", "deepar", "transformer"])
+    parser.add_argument("--cycle-model", choices=["rnn", "lstm", "deepar", "transformer"])
+    parser.add_argument("--trend-transform", choices=SUPPORTED_TRANSFORMS)
     parser.add_argument("--output-dir", default="outputs/hp_pytorch")
     return parser.parse_args()
 
@@ -41,6 +45,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.trend_transform:
+        config["components"]["trend"]["transform"] = args.trend_transform
+    if args.trend_model:
+        config["experiment"]["trend_model"] = args.trend_model
+    if args.cycle_model:
+        config["experiment"]["cycle_model"] = args.cycle_model
     if args.smoke:
         config = smoke_config(config)
     models = [args.model] if args.model else config["experiment"].get("models", [config["experiment"]["model"]])
