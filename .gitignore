@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Credenciales
+.env
+.env.*
+*.pem
+*.key
+
+# Resultados experimentales masivos
+resultados*/
+results_lstm*/
+pronosticos/
+performance/
+dashboards/
+runs/
+sellin_files/
+csv_files/
+
+# Archivos generados por LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls
